@@ -640,6 +640,10 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// Size multiplier for native background effect geometry, from 0.2 to 3.
 @"background-effect-size": f32 = 1,
 
+/// Maximum frame rate for animated native background effects. This is
+/// independent of the display refresh rate and is clamped from 1 to 120.
+@"background-effect-fps": u8 = 60,
+
 /// Background image opacity.
 ///
 /// This is relative to the value of `background-opacity`.

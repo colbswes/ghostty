@@ -567,6 +567,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             background_effect_color: ?terminal.color.RGB,
             background_effect_intensity: f32,
             background_effect_size: f32,
+            background_effect_fps: u8,
             background_opacity: f64,
             background_opacity_cells: bool,
             foreground: terminal.color.RGB,
@@ -647,6 +648,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         null,
                     .background_effect_intensity = std.math.clamp(config.@"background-effect-intensity", 0, 1),
                     .background_effect_size = std.math.clamp(config.@"background-effect-size", 0.2, 3),
+                    .background_effect_fps = std.math.clamp(config.@"background-effect-fps", 1, 120),
                     .foreground = config.foreground.toTerminalRGB(),
                     .bold_color = if (config.@"bold-color") |b| b.toTerminal() else null,
                     .faint_opacity = @intFromFloat(@ceil(config.@"faint-opacity" * 255)),
@@ -1550,7 +1552,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const animation_now = try std.time.Instant.now();
             const background_effect_due = if (self.background_effect_state) |effect|
-                effect.frameDue(animation_now)
+                effect.frameDue(animation_now, self.config.background_effect_fps)
             else
                 false;
 
@@ -2009,7 +2011,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.config.background_effect != config.background_effect or
                 !std.meta.eql(self.config.background_effect_color, config.background_effect_color) or
                 self.config.background_effect_intensity != config.background_effect_intensity or
-                self.config.background_effect_size != config.background_effect_size;
+                self.config.background_effect_size != config.background_effect_size or
+                self.config.background_effect_fps != config.background_effect_fps;
 
             var new_background_effect: ?*background_effect.State = null;
             if (background_effect_changed) {

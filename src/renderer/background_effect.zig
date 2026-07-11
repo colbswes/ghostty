@@ -110,10 +110,12 @@ pub const State = struct {
         return self.effect != .dots;
     }
 
-    pub fn frameDue(self: *const State, now: std.time.Instant) bool {
+    pub fn frameDue(self: *const State, now: std.time.Instant, fps: u8) bool {
         const last = self.last_draw orelse return true;
         if (!self.animated()) return false;
-        return now.since(last) >= 15 * std.time.ns_per_ms;
+        const interval = std.time.ns_per_s / @max(@as(u64, fps), 1);
+        const tolerance = @min(2 * std.time.ns_per_ms, interval / 10);
+        return now.since(last) + tolerance >= interval;
     }
 
     pub fn current(self: *const State) []const Primitive {
