@@ -48,3 +48,15 @@ theme = Odysseus Terminal
 The bundled themes are Dark, Light, Midnight, Paper, Cyberpunk, Retrowave,
 Forest, Ocean, Ume, Copper, Terminal, Organs, Lavender, GPT, Claude, and Cute.
 Each theme keeps its original palette and default background effect.
+
+On macOS, the `Appearance` menu in the system menu bar lists all 16 themes.
+Selecting one writes the theme to Ghostty's normal configuration file and
+reloads the running application immediately. The menu's `Edit Effect Settings…`
+item opens that same file for optional overrides:
+
+```ini
+background-effect-color = #64d2ff
+background-effect-intensity = 0.8
+background-effect-size = 1
+background-effect-fps = 60
+```

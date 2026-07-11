@@ -141,6 +141,17 @@ extension Ghostty {
             #endif
         }
 
+        #if os(macOS)
+        /// The configuration file Ghostty opens and gives precedence to.
+        /// Resolving this path also creates the file and its parent directory
+        /// when necessary, matching `openConfig()` behavior exactly.
+        var configFileURL: URL? {
+            let path = configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+            guard !path.isEmpty else { return nil }
+            return URL(fileURLWithPath: path)
+        }
+        #endif
+
         /// Reload the configuration.
         func reloadConfig(soft: Bool = false) {
             guard let app = self.app else { return }

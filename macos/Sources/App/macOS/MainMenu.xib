@@ -15,6 +15,7 @@
         <customObject id="bbz-4X-AYv" userLabel="AppDelegate" customClass="AppDelegate" customModule="Ghostty" customModuleProvider="target">
             <connections>
                 <outlet property="menuAbout" destination="5kV-Vb-QxS" id="Y5y-UO-NK6"/>
+                <outlet property="menuAppearance" destination="OdY-Ap-menu" id="OdY-Ap-outlet"/>
                 <outlet property="menuBringAllToFront" destination="LE2-aR-0XJ" id="AP9-oK-60V"/>
                 <outlet property="menuChangeTabTitle" destination="iac-lh-Cl7" id="tId-v0-a3E"/>
                 <outlet property="menuChangeTitle" destination="24I-xg-qIq" id="kg6-kT-jNL"/>
@@ -371,6 +372,14 @@
                                     <action selector="toggleTerminalInspector:" target="-1" id="87m-3R-fQl"/>
                                 </connections>
                             </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
+                <menuItem title="Appearance" id="OdY-Ap-item">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="Appearance" id="OdY-Ap-menu">
+                        <items>
+                            <menuItem title="Odysseus Themes" enabled="NO" id="OdY-Ap-placeholder"/>
                         </items>
                     </menu>
                 </menuItem>

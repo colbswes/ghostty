@@ -327,9 +327,17 @@ fragment float4 background_effect_fragment(
       cell = min(cell, spacing - cell);
       coverage = 1.0f - smoothstep(0.5f, 1.25f, min(cell.x, cell.y));
     } break;
+    case 7: // additive ember core
+      coverage = 1.0f - smoothstep(0.72f, 1.0f, length(in.local));
+      break;
   }
   float alpha = in.alpha * coverage;
-  return float4(in.color.rgb * alpha, alpha);
+  // Ember glows and cores (kinds 4 and 7) blend additively, matching the
+  // canvas `lighter` compositing in the reference implementation. With
+  // premultiplied one/one-minus-src-alpha blending, writing zero alpha
+  // leaves the destination intact so the color is purely added.
+  float dst_alpha = (in.kind == 4 || in.kind == 7) ? 0.0f : alpha;
+  return float4(in.color.rgb * alpha, dst_alpha);
 }
 
 //-------------------------------------------------------------------

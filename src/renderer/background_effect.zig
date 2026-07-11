@@ -19,6 +19,10 @@ pub const PrimitiveKind = enum(u8) {
     glow,
     dots,
     grid,
+    /// Additively-blended disc, used for the white-hot ember cores. The
+    /// reference implementation draws embers with canvas `lighter`
+    /// compositing; `glow` and `core` reproduce that in the shader.
+    core,
 };
 
 /// One instanced quad. The fragment shader turns the quad into the requested
@@ -36,8 +40,16 @@ pub const Primitive = extern struct {
 /// Native ports of the canvas effects in Odysseus `static/js/theme.js`.
 /// Simulation values below intentionally mirror the original JS constants.
 pub const State = struct {
-    pub const max_primitives = 20_000;
+    pub const max_primitives = 42_000;
     pub const frame_interval_ns = std.time.ns_per_s / 60;
+
+    /// Trail lengths, in simulation steps. The reference implementation
+    /// draws onto a persistent canvas: embers fade it 18% per frame and
+    /// perlin-flow 2% per frame, so these are sized to where the trails
+    /// drop below one 8-bit alpha step (0.82^24 and 0.98^192 of the
+    /// brightest stamp, respectively).
+    pub const ember_trail_len = 24;
+    pub const flow_trail_len = 192;
 
     effect: Effect,
     primitives: [max_primitives]Primitive = undefined,
@@ -46,6 +58,7 @@ pub const State = struct {
     height: f32 = 0,
     pixel_scale: f32 = 1,
     tick: f32 = 0,
+    step_counter: u32 = 0,
     last_step: ?std.time.Instant = null,
     last_draw: ?std.time.Instant = null,
     prng: std.Random.DefaultPrng,
@@ -59,13 +72,12 @@ pub const State = struct {
     sparkles: [35]Sparkle = undefined,
     embers: [100]Ember = undefined,
     ember_count: usize = 0,
-    ember_history: [100][24]TrailSample = undefined,
+    ember_alive: usize = 0,
+    ember_history: [100][ember_trail_len]TrailSample = undefined,
     ember_history_head: usize = 0,
-    ember_history_filled: usize = 0,
     flow: [200]FlowParticle = undefined,
-    flow_history: [200][96]TrailSample = undefined,
+    flow_history: [200][flow_trail_len]TrailSample = undefined,
     flow_history_head: usize = 0,
-    flow_history_filled: usize = 0,
 
     const Pulse = struct { pos: [2]f32, velocity: [2]f32 };
     const Drop = struct { x: f32, y: f32, len: f32, speed: f32, alpha: f32 };
@@ -89,10 +101,17 @@ pub const State = struct {
         max_life: f32,
         wobble: f32,
         spark: bool,
-        generation: u16,
+        /// Dead embers stop moving and recording, but their trail keeps
+        /// rendering until it fades out, like the persistent canvas in
+        /// the reference implementation.
+        alive: bool,
     };
-    const FlowParticle = struct { pos: [2]f32, life: f32, generation: u16 };
-    const TrailSample = struct { pos: [2]f32, strength: f32, radius: f32, generation: u16 };
+    const FlowParticle = struct { pos: [2]f32, life: f32 };
+    /// One persisted trail stamp. `step` is the step_counter value at the
+    /// time of recording (0 = never written); a sample is only valid while
+    /// its ring position still matches its age, which lets stale entries
+    /// from idle (dead) slots expire instead of re-rendering on wraparound.
+    const TrailSample = struct { pos: [2]f32, strength: f32, radius: f32, step: u32 };
 
     pub fn create(alloc: std.mem.Allocator, effect: Effect) !*State {
         const self = try alloc.create(State);
@@ -160,6 +179,7 @@ pub const State = struct {
         self.primitive_count = 0;
         self.last_step = null;
         self.tick = 0;
+        self.step_counter = 0;
         const random = self.prng.random();
 
         switch (self.effect) {
@@ -176,11 +196,12 @@ pub const State = struct {
             },
             .@"perlin-flow" => {
                 self.flow_history_head = 0;
-                self.flow_history_filled = 0;
+                for (&self.flow_history) |*trail| {
+                    for (trail) |*sample| sample.step = 0;
+                }
                 for (&self.flow) |*p| p.* = .{
                     .pos = .{ random.float(f32) * width, random.float(f32) * height },
                     .life = random.float(f32),
-                    .generation = 1,
                 };
             },
             .petals => {
@@ -194,10 +215,10 @@ pub const State = struct {
             },
             .embers => {
                 self.ember_count = 60;
+                self.ember_alive = 60;
                 self.ember_history_head = 0;
-                self.ember_history_filled = 0;
                 for (&self.ember_history) |*trail| {
-                    for (trail) |*sample| sample.generation = 0;
+                    for (trail) |*sample| sample.step = 0;
                 }
                 for (self.embers[0..self.ember_count]) |*e| {
                     e.* = self.makeEmber(random);
@@ -356,8 +377,8 @@ pub const State = struct {
     }
 
     fn stepPerlin(self: *State, dt: f32) void {
-        self.flow_history_head = (self.flow_history_head + 1) % 96;
-        self.flow_history_filled = @min(self.flow_history_filled + 1, 96);
+        self.bumpStepCounter();
+        self.flow_history_head = (self.flow_history_head + 1) % flow_trail_len;
         const random = self.prng.random();
         for (&self.flow, 0..) |*p, i| {
             const n = smoothNoise(p.pos[0] / self.pixel_scale * 0.004 + self.tick * 0.0008, p.pos[1] / self.pixel_scale * 0.004 + 100);
@@ -367,21 +388,25 @@ pub const State = struct {
             p.pos[1] += @sin(angle) * speed * dt;
             p.life -= 0.001 * dt;
             if (p.life <= 0 or p.pos[0] < 0 or p.pos[0] > self.width or p.pos[1] < 0 or p.pos[1] > self.height) {
+                // The old trail samples stay in the ring and keep fading;
+                // on the reference's persistent canvas a respawn does not
+                // erase the trail left behind.
                 p.pos = .{ random.float(f32) * self.width, random.float(f32) * self.height };
                 p.life = 1;
-                p.generation +%= 1;
-                if (p.generation == 0) p.generation = 1;
             }
-            self.flow_history[i][self.flow_history_head] = .{ .pos = p.pos, .strength = p.life * 0.15, .radius = self.pixel_scale, .generation = p.generation };
+            self.flow_history[i][self.flow_history_head] = .{ .pos = p.pos, .strength = p.life * 0.15, .radius = self.pixel_scale, .step = self.step_counter };
         }
     }
 
     fn buildPerlin(self: *State, color: [4]u8, intensity: f32, size: f32) void {
-        for (self.flow, 0..) |p, particle_i| {
+        for (0..self.flow.len) |particle_i| {
             var fade: f32 = 1;
-            for (0..self.flow_history_filled) |age| {
-                const sample = self.flow_history[particle_i][(self.flow_history_head + 96 - age) % 96];
-                if (sample.generation == p.generation) self.addDisc(sample.pos, sample.radius * size, sample.strength * fade * intensity, color, .disc);
+            for (0..flow_trail_len) |age| {
+                const sample = self.flow_history[particle_i][(self.flow_history_head + flow_trail_len - age) % flow_trail_len];
+                if (self.sampleValid(sample, age)) {
+                    const alpha = sample.strength * fade * intensity;
+                    if (alpha > 0.0015) self.addDisc(sample.pos, sample.radius * size, alpha, color, .disc);
+                }
                 fade *= 0.98;
             }
         }
@@ -458,31 +483,29 @@ pub const State = struct {
             .max_life = 220 + random.float(f32) * 220,
             .wobble = random.float(f32) * std.math.pi * 2,
             .spark = false,
-            .generation = 1,
+            .alive = true,
         };
     }
 
     fn stepEmbers(self: *State, dt: f32) void {
-        self.ember_history_head = (self.ember_history_head + 1) % 24;
-        self.ember_history_filled = @min(self.ember_history_filled + 1, 24);
+        self.bumpStepCounter();
+        self.ember_history_head = (self.ember_history_head + 1) % ember_trail_len;
         const random = self.prng.random();
-        var i: usize = 0;
-        while (i < self.ember_count) {
-            var e = &self.embers[i];
+        for (self.embers[0..self.ember_count], 0..) |*e, i| {
+            if (!e.alive) continue;
             e.wobble += 0.03 * dt;
             e.pos[0] += (e.velocity[0] + @sin(e.wobble) * 0.5 * self.pixel_scale) * dt;
             e.pos[1] += e.velocity[1] * dt;
             e.life += dt;
             if (e.life > e.max_life or e.pos[1] < -20 * self.pixel_scale) {
-                self.ember_count -= 1;
-                if (i != self.ember_count) {
-                    self.embers[i] = self.embers[self.ember_count];
-                    self.ember_history[i] = self.ember_history[self.ember_count];
-                }
-                if (self.ember_count < 70) {
-                    self.embers[self.ember_count] = self.makeEmber(random);
-                    for (&self.ember_history[self.ember_count]) |*sample| sample.generation = 0;
-                    self.ember_count += 1;
+                // Slots stay put so the dead ember's trail keeps fading
+                // in place. Respawn in the same slot unless we're over
+                // the steady-state population from a recent burst.
+                if (self.ember_alive - 1 < 70) {
+                    e.* = self.makeEmber(random);
+                } else {
+                    e.alive = false;
+                    self.ember_alive -= 1;
                 }
                 continue;
             }
@@ -491,35 +514,56 @@ pub const State = struct {
             const fade = @min(1, @min(ratio * 4, (1 - ratio) * 3));
             const radius = e.radius * (if (e.spark) @as(f32, 2.4) else 1);
             const alpha = (if (e.spark) @as(f32, 0.9) else 0.55) * fade;
-            self.ember_history[i][self.ember_history_head] = .{ .pos = e.pos, .strength = alpha, .radius = radius, .generation = e.generation };
+            self.ember_history[i][self.ember_history_head] = .{ .pos = e.pos, .strength = alpha, .radius = radius, .step = self.step_counter };
             e.spark = false;
-            i += 1;
         }
-        if (self.ember_count + 5 <= self.embers.len and random.float(f32) < 0.015 * dt) {
+        if (random.float(f32) < 0.015 * dt) {
             const bx = random.float(f32) * self.width;
+            var slot: usize = 0;
             for (0..5) |_| {
+                const idx = idx: {
+                    while (slot < self.ember_count) : (slot += 1) {
+                        if (!self.embers[slot].alive) break :idx slot;
+                    }
+                    if (self.ember_count >= self.embers.len) return;
+                    defer self.ember_count += 1;
+                    break :idx self.ember_count;
+                };
                 var e = self.makeEmber(random);
                 e.pos[0] = bx + (random.float(f32) - 0.5) * 40 * self.pixel_scale;
                 e.pos[1] = self.height - 10 * self.pixel_scale;
                 e.velocity[1] *= 1.5;
-                self.embers[self.ember_count] = e;
-                self.ember_count += 1;
+                self.embers[idx] = e;
+                self.ember_alive += 1;
             }
         }
     }
 
     fn buildEmbers(self: *State, color: [4]u8, intensity: f32, size: f32) void {
-        for (self.embers[0..self.ember_count], 0..) |e, ember_i| {
+        for (0..self.ember_count) |ember_i| {
             var fade: f32 = 1;
-            for (0..self.ember_history_filled) |age| {
-                const sample = self.ember_history[ember_i][(self.ember_history_head + 24 - age) % 24];
-                if (sample.generation == e.generation) {
+            for (0..ember_trail_len) |age| {
+                const sample = self.ember_history[ember_i][(self.ember_history_head + ember_trail_len - age) % ember_trail_len];
+                if (self.sampleValid(sample, age)) {
                     self.addDisc(sample.pos, sample.radius * 4 * size, sample.strength * fade * intensity, color, .glow);
-                    self.addDisc(sample.pos, sample.radius * 0.5 * size, sample.strength * 0.6 * fade * intensity, .{ 255, 255, 255, 255 }, .disc);
+                    self.addDisc(sample.pos, sample.radius * 0.5 * size, sample.strength * 0.6 * fade * intensity, .{ 255, 255, 255, 255 }, .core);
                 }
                 fade *= 0.82;
             }
         }
+    }
+
+    fn bumpStepCounter(self: *State) void {
+        self.step_counter +%= 1;
+        if (self.step_counter == 0) self.step_counter = 1;
+    }
+
+    /// A ring sample is valid while its recorded step still matches its
+    /// position-implied age; slots that stopped recording (dead embers)
+    /// hold stale samples that must not re-render once the head wraps.
+    fn sampleValid(self: *const State, sample: TrailSample, age: usize) bool {
+        return sample.step != 0 and
+            sample.step +% @as(u32, @truncate(age)) == self.step_counter;
     }
 
     fn add(self: *State, primitive: Primitive) void {

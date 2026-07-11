@@ -19,6 +19,7 @@ class AppDelegate: NSObject,
 
     /// Various menu items so that we can programmatically sync the keyboard shortcut with the Ghostty config
     @IBOutlet private var menuAbout: NSMenuItem?
+    @IBOutlet private var menuAppearance: NSMenu?
     @IBOutlet private var menuServices: NSMenu?
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
     @IBOutlet private var menuOpenConfig: NSMenuItem?
@@ -81,6 +82,28 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuMoveSplitDividerDown: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerLeft: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerRight: NSMenuItem?
+
+    private static let odysseusThemes = [
+        "Odysseus Dark",
+        "Odysseus Light",
+        "Odysseus Midnight",
+        "Odysseus Paper",
+        "Odysseus Cyberpunk",
+        "Odysseus Retrowave",
+        "Odysseus Forest",
+        "Odysseus Ocean",
+        "Odysseus Ume",
+        "Odysseus Copper",
+        "Odysseus Terminal",
+        "Odysseus Organs",
+        "Odysseus Lavender",
+        "Odysseus GPT",
+        "Odysseus Claude",
+        "Odysseus Cute",
+    ]
+    private static let odysseusConfigStart = "# Ghostty Odysseus appearance start"
+    private static let odysseusConfigEnd = "# Ghostty Odysseus appearance end"
+    private var odysseusThemeMenuItems: [String: NSMenuItem] = [:]
 
     /// The dock menu
     private var dockMenu: NSMenu = NSMenu()
@@ -219,6 +242,7 @@ class AppDelegate: NSObject,
 
         // Initial config loading
         ghosttyConfigDidChange(config: ghostty.config)
+        setupOdysseusAppearanceMenu()
 
         // Start our update checker.
         updateController.startUpdater()
@@ -784,6 +808,7 @@ class AppDelegate: NSObject,
         // Config could change keybindings, so update everything that depends on that
         DispatchQueue.main.async {
             self.syncMenuShortcuts(config)
+            self.syncOdysseusAppearanceMenu()
         }
         TerminalController.all.forEach { $0.relabelTabs() }
 
@@ -939,6 +964,135 @@ class AppDelegate: NSObject,
 
     @IBAction func reloadConfig(_ sender: Any?) {
         ghostty.reloadConfig()
+    }
+
+    private func setupOdysseusAppearanceMenu() {
+        guard odysseusThemeMenuItems.isEmpty, let submenu = menuAppearance else { return }
+
+        // Keep a placeholder in the nib so AppKit doesn't discard an empty
+        // top-level menu before applicationDidFinishLaunching.
+        submenu.removeAllItems()
+        for theme in Self.odysseusThemes {
+            let title = String(theme.dropFirst("Odysseus ".count))
+            let item = NSMenuItem(
+                title: title,
+                action: #selector(selectOdysseusTheme(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = theme
+            submenu.addItem(item)
+            odysseusThemeMenuItems[theme] = item
+        }
+
+        submenu.addItem(.separator())
+        let editItem = NSMenuItem(
+            title: "Edit Effect Settings…",
+            action: #selector(openConfig(_:)),
+            keyEquivalent: ""
+        )
+        editItem.target = self
+        submenu.addItem(editItem)
+        syncOdysseusAppearanceMenu()
+    }
+
+    @objc private func selectOdysseusTheme(_ sender: NSMenuItem) {
+        guard
+            let theme = sender.representedObject as? String,
+            Self.odysseusThemes.contains(theme)
+        else { return }
+
+        do {
+            try persistOdysseusTheme(theme)
+            syncOdysseusAppearanceMenu()
+            ghostty.reloadConfig()
+        } catch {
+            Self.logger.error("failed to save Odysseus theme: \(error.localizedDescription, privacy: .public)")
+            let alert = NSAlert()
+            alert.messageText = "Unable to Change Appearance"
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+    }
+
+    private func persistOdysseusTheme(_ theme: String) throws {
+        guard let url = ghostty.configFileURL else {
+            throw NSError(
+                domain: "Ghostty.OdysseusAppearance",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Ghostty could not locate its configuration file."]
+            )
+        }
+
+        var contents = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let hasManagedBlock = contents.contains(Self.odysseusConfigStart) &&
+            contents.contains(Self.odysseusConfigEnd)
+        var insideManagedBlock = false
+        var lines: [String] = []
+
+        for line in contents.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if hasManagedBlock && trimmed == Self.odysseusConfigStart {
+                insideManagedBlock = true
+                continue
+            }
+            if insideManagedBlock {
+                if trimmed == Self.odysseusConfigEnd { insideManagedBlock = false }
+                continue
+            }
+
+            if let configuredTheme = Self.themeValue(in: line),
+               Self.odysseusThemes.contains(configuredTheme) {
+                continue
+            }
+            lines.append(line)
+        }
+
+        while lines.last?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            lines.removeLast()
+        }
+        if !lines.isEmpty { lines.append("") }
+        lines.append(Self.odysseusConfigStart)
+        lines.append("theme = \(theme)")
+        lines.append(Self.odysseusConfigEnd)
+        contents = lines.joined(separator: "\n") + "\n"
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func syncOdysseusAppearanceMenu() {
+        let selectedTheme: String? = if
+            let url = ghostty.configFileURL,
+            let contents = try? String(contentsOf: url, encoding: .utf8)
+        {
+            contents.components(separatedBy: .newlines)
+                .reversed()
+                .compactMap { Self.themeValue(in: $0) }
+                .first { Self.odysseusThemes.contains($0) }
+        } else {
+            nil
+        }
+
+        for (theme, item) in odysseusThemeMenuItems {
+            item.state = theme == selectedTheme ? .on : .off
+        }
+    }
+
+    private static func themeValue(in line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.hasPrefix("#") else { return nil }
+        let parts = trimmed.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard
+            parts.count == 2,
+            parts[0].trimmingCharacters(in: .whitespaces) == "theme"
+        else { return nil }
+
+        var value = parts[1].trimmingCharacters(in: .whitespaces)
+        if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+            value.removeFirst()
+            value.removeLast()
+        }
+        return value
     }
 
     @IBAction func checkForUpdates(_ sender: Any?) {
