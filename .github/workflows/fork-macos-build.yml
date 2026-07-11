@@ -2,6 +2,9 @@ name: Fork macOS Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/native-background-effects
 
 jobs:
   build:
