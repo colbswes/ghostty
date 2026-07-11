@@ -1,0 +1,8 @@
+background = #0a0a0f
+foreground = #0ff0fc
+cursor-color = #0ff0fc
+cursor-text = #0a0a0f
+selection-background = #12101a
+selection-foreground = #0ff0fc
+background-effect = synapse
+background-effect-color = #0ff0fc

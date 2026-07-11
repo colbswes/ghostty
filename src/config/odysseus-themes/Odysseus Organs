@@ -1,0 +1,9 @@
+background = #0a0406
+foreground = #efe1c8
+cursor-color = #efe1c8
+cursor-text = #0a0406
+selection-background = #15080a
+selection-foreground = #efe1c8
+background-effect = rain
+background-effect-color = #451616
+background-effect-intensity = 0.65

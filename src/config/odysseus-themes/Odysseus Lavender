@@ -1,0 +1,9 @@
+background = #f3eef8
+foreground = #3d3551
+cursor-color = #3d3551
+cursor-text = #f3eef8
+selection-background = #faf7ff
+selection-foreground = #3d3551
+background-effect = none
+background-opacity = 0.88
+background-blur = macos-glass-regular

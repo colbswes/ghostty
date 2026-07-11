@@ -1,0 +1,8 @@
+background = #fff0f5
+foreground = #d4608a
+cursor-color = #d4608a
+cursor-text = #fff0f5
+selection-background = #fff8fa
+selection-foreground = #d4608a
+background-effect = sparkles
+background-effect-color = #ff8cb8

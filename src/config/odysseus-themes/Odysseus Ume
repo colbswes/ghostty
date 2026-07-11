@@ -1,0 +1,8 @@
+background = #2b1b2e
+foreground = #f5c2e7
+cursor-color = #f5c2e7
+cursor-text = #2b1b2e
+selection-background = #1e1420
+selection-foreground = #f5c2e7
+background-effect = petals
+background-effect-color = #f5a0c0

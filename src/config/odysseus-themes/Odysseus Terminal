@@ -1,0 +1,9 @@
+background = #000000
+foreground = #00ff41
+cursor-color = #00ff41
+cursor-text = #000000
+selection-background = #0a0a0a
+selection-foreground = #00ff41
+background-effect = perlin-flow
+background-effect-color = #00ff41
+background-effect-intensity = 0.8

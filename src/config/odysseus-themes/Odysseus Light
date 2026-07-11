@@ -1,0 +1,8 @@
+background = #f0ebe3
+foreground = #5a5248
+cursor-color = #5a5248
+cursor-text = #f0ebe3
+selection-background = #faf6f0
+selection-foreground = #5a5248
+background-effect = dots
+background-effect-color = #5a5248

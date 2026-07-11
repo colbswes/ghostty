@@ -126,6 +126,14 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     }
 
     // Themes
+    {
+        const install_step = b.addInstallDirectory(.{
+            .source_dir = b.path("src/config/odysseus-themes"),
+            .install_dir = .{ .custom = "share" },
+            .install_subdir = b.pathJoin(&.{ "ghostty", "themes" }),
+        });
+        try steps.append(b.allocator, &install_step.step);
+    }
     if (cfg.emit_themes) {
         if (b.lazyDependency("iterm2_themes", .{})) |upstream| {
             const install_step = b.addInstallDirectory(.{

@@ -7,6 +7,7 @@ def main [
     --scheme: string = "Ghostty"       # Xcode scheme (Ghostty, Ghostty-iOS, DockTilePlugin)
     --configuration: string = "Debug"  # Build configuration (Debug, Release, ReleaseLocal)
     --action: string = "build"         # xcodebuild action (build, test, clean, etc.)
+    --arch: string = ""                # Optional single architecture (for example, arm64)
 ] {
     let project = ($env.FILE_PWD | path join "Ghostty.xcodeproj")
     let build_dir = ($env.FILE_PWD | path join "build")
@@ -19,6 +20,12 @@ def main [
         []
     }
 
+    let arch_settings = if ($arch | is-empty) {
+        []
+    } else {
+        [$"ARCHS=($arch)" "ONLY_ACTIVE_ARCH=YES"]
+    }
+
     (^env -i
         $"HOME=($env.HOME)"
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
@@ -27,6 +34,7 @@ def main [
         -scheme $scheme
         -configuration $configuration
         $"SYMROOT=($build_dir)"
+        ...$arch_settings
         ...$skip_testing
         $action)
 }

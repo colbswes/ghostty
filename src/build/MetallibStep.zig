@@ -55,6 +55,9 @@ pub fn create(b: *std.Build, opts: Options) ?*MetallibStep {
         b,
         b.fmt("metal {s}", .{opts.name}),
     );
+    if (b.graph.env_map.get("GHOSTTY_XCODE_DEVELOPER_DIR")) |dir| {
+        run_ir.setEnvironmentVariable("DEVELOPER_DIR", dir);
+    }
     run_ir.addArgs(&.{ "/usr/bin/xcrun", "-sdk", sdk, "metal", "-o" });
     const output_ir = run_ir.addOutputFileArg(b.fmt("{s}.ir", .{opts.name}));
     run_ir.addArgs(&.{"-c"});
@@ -70,6 +73,9 @@ pub fn create(b: *std.Build, opts: Options) ?*MetallibStep {
         b,
         b.fmt("metallib {s}", .{opts.name}),
     );
+    if (b.graph.env_map.get("GHOSTTY_XCODE_DEVELOPER_DIR")) |dir| {
+        run_lib.setEnvironmentVariable("DEVELOPER_DIR", dir);
+    }
     run_lib.addArgs(&.{ "/usr/bin/xcrun", "-sdk", sdk, "metallib", "-o" });
     const output_lib = run_lib.addOutputFileArg(b.fmt("{s}.metallib", .{opts.name}));
     run_lib.addFileArg(output_ir);

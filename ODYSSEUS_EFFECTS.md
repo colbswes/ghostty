@@ -37,3 +37,14 @@ particle simulation as CPU state and upload analytic point/line/shape instances
 in one draw call. They do not run an integration loop for every screen pixel.
 Dots is static after its initial frame; the animated effects are independently
 frame-capped even on a 120 Hz display.
+
+The fork also bundles every theme defined by the original Odysseus theme
+picker. Select one by name in the Ghostty config, for example:
+
+```ini
+theme = Odysseus Terminal
+```
+
+The bundled themes are Dark, Light, Midnight, Paper, Cyberpunk, Retrowave,
+Forest, Ocean, Ume, Copper, Terminal, Organs, Lavender, GPT, Claude, and Cute.
+Each theme keeps its original palette and default background effect.

@@ -1,0 +1,7 @@
+background = #262624
+foreground = #f5f4f0
+cursor-color = #f5f4f0
+cursor-text = #262624
+selection-background = #30302e
+selection-foreground = #f5f4f0
+background-effect = none
