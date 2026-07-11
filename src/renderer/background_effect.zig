@@ -194,6 +194,9 @@ pub const State = struct {
                 self.ember_count = 60;
                 self.ember_history_head = 0;
                 self.ember_history_filled = 0;
+                for (&self.ember_history) |*trail| {
+                    for (trail) |*sample| sample.generation = 0;
+                }
                 for (self.embers[0..self.ember_count]) |*e| {
                     e.* = self.makeEmber(random);
                     e.pos[1] = random.float(f32) * height;
@@ -469,7 +472,17 @@ pub const State = struct {
             e.pos[1] += e.velocity[1] * dt;
             e.life += dt;
             if (e.life > e.max_life or e.pos[1] < -20 * self.pixel_scale) {
-                e.* = self.makeEmber(random);
+                self.ember_count -= 1;
+                if (i != self.ember_count) {
+                    self.embers[i] = self.embers[self.ember_count];
+                    self.ember_history[i] = self.ember_history[self.ember_count];
+                }
+                if (self.ember_count < 70) {
+                    self.embers[self.ember_count] = self.makeEmber(random);
+                    for (&self.ember_history[self.ember_count]) |*sample| sample.generation = 0;
+                    self.ember_count += 1;
+                }
+                continue;
             }
             if (!e.spark and random.float(f32) < 0.003 * dt) e.spark = true;
             const ratio = e.life / e.max_life;
