@@ -27,6 +27,21 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
+        .{ "background_effect_decay_flow", .{
+            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_decay_flow.f.glsl"),
+            .blending_enabled = false,
+        } },
+        .{ "background_effect_decay_embers", .{
+            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_decay_embers.f.glsl"),
+            .blending_enabled = false,
+        } },
+        .{ "background_effect_composite", .{
+            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_composite.f.glsl"),
+            .blending_enabled = true,
+        } },
         .{ "cell_text", .{
             .vertex_attributes = CellText,
             .vertex_fn = loadShaderCode("../shaders/glsl/cell_text.v.glsl"),

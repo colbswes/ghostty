@@ -29,6 +29,21 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
+        .{ "background_effect_decay_flow", .{
+            .vertex_fn = "full_screen_vertex",
+            .fragment_fn = "background_effect_decay_flow_fragment",
+            .blending_enabled = false,
+        } },
+        .{ "background_effect_decay_embers", .{
+            .vertex_fn = "full_screen_vertex",
+            .fragment_fn = "background_effect_decay_embers_fragment",
+            .blending_enabled = false,
+        } },
+        .{ "background_effect_composite", .{
+            .vertex_fn = "full_screen_vertex",
+            .fragment_fn = "background_effect_composite_fragment",
+            .blending_enabled = true,
+        } },
         .{ "cell_text", .{
             .vertex_attributes = CellText,
             .vertex_fn = "cell_text_vertex",

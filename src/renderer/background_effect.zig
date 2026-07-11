@@ -23,10 +23,6 @@ pub const PrimitiveKind = enum(u8) {
     /// reference implementation draws embers with canvas `lighter`
     /// compositing; `glow` and `core` reproduce that in the shader.
     core,
-    /// Long, tapered, additive streak aligned opposite an ember's velocity.
-    /// The retained radial stamps provide haze; this primitive makes the tail
-    /// visibly read as a tail even at the reference's slow particle speeds.
-    ember_trail,
 };
 
 /// One instanced quad. The fragment shader turns the quad into the requested
@@ -44,16 +40,8 @@ pub const Primitive = extern struct {
 /// Native ports of the canvas effects in Odysseus `static/js/theme.js`.
 /// Simulation values below intentionally mirror the original JS constants.
 pub const State = struct {
-    pub const max_primitives = 42_000;
+    pub const max_primitives = 20_000;
     pub const frame_interval_ns = std.time.ns_per_s / 60;
-
-    /// Trail lengths, in simulation steps. Embers reconstruct the reference
-    /// canvas's short 18%-per-frame fade. Perlin flow intentionally keeps its
-    /// entire retained window at full strength so Terminal develops the dense,
-    /// persistent green field of the Odysseus presentation instead of looking
-    /// like a handful of short comet tails.
-    pub const ember_trail_len = 24;
-    pub const flow_trail_len = 192;
 
     effect: Effect,
     primitives: [max_primitives]Primitive = undefined,
@@ -62,7 +50,6 @@ pub const State = struct {
     height: f32 = 0,
     pixel_scale: f32 = 1,
     tick: f32 = 0,
-    step_counter: u32 = 0,
     last_step: ?std.time.Instant = null,
     last_draw: ?std.time.Instant = null,
     prng: std.Random.DefaultPrng,
@@ -77,11 +64,7 @@ pub const State = struct {
     embers: [140]Ember = undefined,
     ember_count: usize = 0,
     ember_alive: usize = 0,
-    ember_history: [140][ember_trail_len]TrailSample = undefined,
-    ember_history_head: usize = 0,
     flow: [200]FlowParticle = undefined,
-    flow_history: [200][flow_trail_len]TrailSample = undefined,
-    flow_history_head: usize = 0,
 
     const Pulse = struct { pos: [2]f32, velocity: [2]f32 };
     const Drop = struct { x: f32, y: f32, len: f32, speed: f32, alpha: f32 };
@@ -111,11 +94,6 @@ pub const State = struct {
         alive: bool,
     };
     const FlowParticle = struct { pos: [2]f32, life: f32 };
-    /// One persisted trail stamp. `step` is the step_counter value at the
-    /// time of recording (0 = never written); a sample is only valid while
-    /// its ring position still matches its age, which lets stale entries
-    /// from idle (dead) slots expire instead of re-rendering on wraparound.
-    const TrailSample = struct { pos: [2]f32, strength: f32, radius: f32, step: u32 };
 
     pub fn create(alloc: std.mem.Allocator, effect: Effect) !*State {
         const self = try alloc.create(State);
@@ -131,6 +109,22 @@ pub const State = struct {
 
     pub fn animated(self: *const State) bool {
         return self.effect != .dots;
+    }
+
+    /// These effects match Odysseus by painting each new particle frame onto
+    /// a persistent GPU canvas. Their paths are therefore genuine historical
+    /// curves rather than geometry extrapolated from one velocity vector.
+    pub fn persistent(self: *const State) bool {
+        return self.effect == .@"perlin-flow" or self.effect == .embers;
+    }
+
+    /// Fraction of the previous canvas retained on each animation frame.
+    pub fn persistence(self: *const State) f32 {
+        return switch (self.effect) {
+            .@"perlin-flow" => 0.98,
+            .embers => 0.82,
+            else => 0,
+        };
     }
 
     pub fn frameDue(self: *const State, now: std.time.Instant, fps: u8) bool {
@@ -183,7 +177,6 @@ pub const State = struct {
         self.primitive_count = 0;
         self.last_step = null;
         self.tick = 0;
-        self.step_counter = 0;
         const random = self.prng.random();
 
         switch (self.effect) {
@@ -199,10 +192,6 @@ pub const State = struct {
                 };
             },
             .@"perlin-flow" => {
-                self.flow_history_head = 0;
-                for (&self.flow_history) |*trail| {
-                    for (trail) |*sample| sample.step = 0;
-                }
                 for (&self.flow) |*p| p.* = .{
                     .pos = .{ random.float(f32) * width, random.float(f32) * height },
                     .life = random.float(f32),
@@ -223,10 +212,6 @@ pub const State = struct {
                 // steady state so a fresh terminal doesn't look empty.
                 self.ember_count = 90;
                 self.ember_alive = 90;
-                self.ember_history_head = 0;
-                for (&self.ember_history) |*trail| {
-                    for (trail) |*sample| sample.step = 0;
-                }
                 for (self.embers[0..self.ember_count]) |*e| {
                     e.* = self.makeEmber(random);
                     e.pos[1] = random.float(f32) * height;
@@ -384,10 +369,8 @@ pub const State = struct {
     }
 
     fn stepPerlin(self: *State, dt: f32) void {
-        self.bumpStepCounter();
-        self.flow_history_head = (self.flow_history_head + 1) % flow_trail_len;
         const random = self.prng.random();
-        for (&self.flow, 0..) |*p, i| {
+        for (&self.flow) |*p| {
             const n = smoothNoise(p.pos[0] / self.pixel_scale * 0.004 + self.tick * 0.0008, p.pos[1] / self.pixel_scale * 0.004 + 100);
             const angle = n * std.math.pi * 6;
             const speed = (1 + smoothNoise(p.pos[0] / self.pixel_scale * 0.003, p.pos[1] / self.pixel_scale * 0.003 + 50) * 1.5) * self.pixel_scale;
@@ -395,30 +378,23 @@ pub const State = struct {
             p.pos[1] += @sin(angle) * speed * dt;
             p.life -= 0.001 * dt;
             if (p.life <= 0 or p.pos[0] < 0 or p.pos[0] > self.width or p.pos[1] < 0 or p.pos[1] > self.height) {
-                // The old trail samples stay in the ring and keep fading;
-                // on the reference's persistent canvas a respawn does not
-                // erase the trail left behind.
+                // Respawning never clears the persistent GPU canvas, matching
+                // the source: the old path keeps fading independently.
                 p.pos = .{ random.float(f32) * self.width, random.float(f32) * self.height };
                 p.life = 1;
             }
-            self.flow_history[i][self.flow_history_head] = .{ .pos = p.pos, .strength = p.life * 0.15, .radius = self.pixel_scale, .step = self.step_counter };
         }
     }
 
     fn buildPerlin(self: *State, color: [4]u8, intensity: f32, size: f32) void {
-        for (0..self.flow.len) |particle_i| {
-            for (0..flow_trail_len) |age| {
-                const sample = self.flow_history[particle_i][(self.flow_history_head + flow_trail_len - age) % flow_trail_len];
-                if (self.sampleValid(sample, age)) {
-                    self.addDisc(
-                        sample.pos,
-                        sample.radius * size,
-                        sample.strength * intensity,
-                        color,
-                        .disc,
-                    );
-                }
-            }
+        for (self.flow) |p| {
+            self.addDisc(
+                p.pos,
+                self.pixel_scale * size,
+                p.life * 0.15 * intensity,
+                color,
+                .disc,
+            );
         }
     }
 
@@ -498,10 +474,8 @@ pub const State = struct {
     }
 
     fn stepEmbers(self: *State, dt: f32) void {
-        self.bumpStepCounter();
-        self.ember_history_head = (self.ember_history_head + 1) % ember_trail_len;
         const random = self.prng.random();
-        for (self.embers[0..self.ember_count], 0..) |*e, i| {
+        for (self.embers[0..self.ember_count]) |*e| {
             if (!e.alive) continue;
             e.wobble += 0.03 * dt;
             e.pos[0] += (e.velocity[0] + @sin(e.wobble) * 0.5 * self.pixel_scale) * dt;
@@ -520,12 +494,6 @@ pub const State = struct {
                 continue;
             }
             if (!e.spark and random.float(f32) < 0.003 * dt) e.spark = true;
-            const ratio = e.life / e.max_life;
-            const fade = @min(1, @min(ratio * 4, (1 - ratio) * 3));
-            const radius = e.radius * (if (e.spark) @as(f32, 2.4) else 1);
-            const alpha = (if (e.spark) @as(f32, 0.9) else 0.55) * fade;
-            self.ember_history[i][self.ember_history_head] = .{ .pos = e.pos, .strength = alpha, .radius = radius, .step = self.step_counter };
-            e.spark = false;
         }
         if (random.float(f32) < 0.015 * dt) {
             const bx = random.float(f32) * self.width;
@@ -550,63 +518,29 @@ pub const State = struct {
     }
 
     fn buildEmbers(self: *State, color: [4]u8, intensity: f32, size: f32) void {
-        // Draw one explicit tapered streak per live ember. Reconstructing only
-        // the browser's fading radial stamps makes slow embers look like dots,
-        // because consecutive stamps overlap almost completely.
-        for (self.embers[0..self.ember_count]) |e| {
+        for (self.embers[0..self.ember_count]) |*e| {
             if (!e.alive) continue;
 
             const ratio = e.life / e.max_life;
             const life_fade = @min(1, @min(ratio * 4, (1 - ratio) * 3));
-            if (life_fade <= 0) continue;
-
-            const velocity = [2]f32{
-                e.velocity[0] + @sin(e.wobble) * 0.5 * self.pixel_scale,
-                e.velocity[1],
-            };
-            const speed = @sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
-            if (speed <= 0.001) continue;
-
-            const direction = [2]f32{ velocity[0] / speed, velocity[1] / speed };
-            const tail_length = (42 * self.pixel_scale + speed * 30) * size;
-            const tail = [2]f32{
-                e.pos[0] - direction[0] * tail_length,
-                e.pos[1] - direction[1] * tail_length,
-            };
-            self.addLineKind(
-                tail,
+            const radius = e.radius * (if (e.spark) @as(f32, 2.4) else 1);
+            const alpha = (if (e.spark) @as(f32, 0.9) else 0.55) * life_fade;
+            self.addDisc(
                 e.pos,
-                @max(e.radius * 6 * size, 1.5 * self.pixel_scale),
-                0.7 * life_fade * intensity,
+                radius * 4 * size,
+                alpha * intensity,
                 color,
-                .ember_trail,
+                .glow,
             );
+            self.addDisc(
+                e.pos,
+                radius * 0.5 * size,
+                alpha * 0.6 * intensity,
+                .{ 255, 255, 255, 255 },
+                .core,
+            );
+            e.spark = false;
         }
-
-        for (0..self.ember_count) |ember_i| {
-            var fade: f32 = 1;
-            for (0..ember_trail_len) |age| {
-                const sample = self.ember_history[ember_i][(self.ember_history_head + ember_trail_len - age) % ember_trail_len];
-                if (self.sampleValid(sample, age)) {
-                    self.addDisc(sample.pos, sample.radius * 4.5 * size, sample.strength * 1.2 * fade * intensity, color, .glow);
-                    self.addDisc(sample.pos, sample.radius * 0.6 * size, sample.strength * 0.8 * fade * intensity, .{ 255, 255, 255, 255 }, .core);
-                }
-                fade *= 0.82;
-            }
-        }
-    }
-
-    fn bumpStepCounter(self: *State) void {
-        self.step_counter +%= 1;
-        if (self.step_counter == 0) self.step_counter = 1;
-    }
-
-    /// A ring sample is valid while its recorded step still matches its
-    /// position-implied age; slots that stopped recording (dead embers)
-    /// hold stale samples that must not re-render once the head wraps.
-    fn sampleValid(self: *const State, sample: TrailSample, age: usize) bool {
-        return sample.step != 0 and
-            sample.step +% @as(u32, @truncate(age)) == self.step_counter;
     }
 
     fn add(self: *State, primitive: Primitive) void {
@@ -624,10 +558,6 @@ pub const State = struct {
     }
 
     fn addLine(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8) void {
-        self.addLineKind(from, to, width, alpha, color, .line);
-    }
-
-    fn addLineKind(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8, kind: PrimitiveKind) void {
         const dx = to[0] - from[0];
         const dy = to[1] - from[1];
         self.add(.{
@@ -636,7 +566,7 @@ pub const State = struct {
             .rotation = std.math.atan2(dy, dx),
             .alpha = alpha,
             .color = color,
-            .kind = kind,
+            .kind = .line,
         });
     }
 };

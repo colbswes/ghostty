@@ -233,6 +233,54 @@ fragment float4 bg_color_fragment(
 }
 
 //-------------------------------------------------------------------
+// Persistent Native Background Effect Canvas
+//-------------------------------------------------------------------
+#pragma mark - Persistent Background Effect Canvas
+
+float4 sample_background_effect_canvas(
+  FullScreenVertexOut in,
+  constant Uniforms& uniforms,
+  texture2d<float> effect_texture,
+  sampler effect_sampler
+) {
+  float2 uv = in.position.xy / uniforms.screen_size;
+  return effect_texture.sample(effect_sampler, uv);
+}
+
+fragment float4 background_effect_decay_flow_fragment(
+  FullScreenVertexOut in [[stage_in]],
+  constant Uniforms& uniforms [[buffer(1)]],
+  texture2d<float> effect_texture [[texture(0)]],
+  sampler effect_sampler [[sampler(0)]]
+) {
+  return sample_background_effect_canvas(
+    in, uniforms, effect_texture, effect_sampler
+  ) * 0.98f;
+}
+
+fragment float4 background_effect_decay_embers_fragment(
+  FullScreenVertexOut in [[stage_in]],
+  constant Uniforms& uniforms [[buffer(1)]],
+  texture2d<float> effect_texture [[texture(0)]],
+  sampler effect_sampler [[sampler(0)]]
+) {
+  return sample_background_effect_canvas(
+    in, uniforms, effect_texture, effect_sampler
+  ) * 0.82f;
+}
+
+fragment float4 background_effect_composite_fragment(
+  FullScreenVertexOut in [[stage_in]],
+  constant Uniforms& uniforms [[buffer(1)]],
+  texture2d<float> effect_texture [[texture(0)]],
+  sampler effect_sampler [[sampler(0)]]
+) {
+  return sample_background_effect_canvas(
+    in, uniforms, effect_texture, effect_sampler
+  );
+}
+
+//-------------------------------------------------------------------
 // Native Background Effect Shader
 //-------------------------------------------------------------------
 #pragma mark - Native Background Effect Shader
@@ -330,18 +378,13 @@ fragment float4 background_effect_fragment(
     case 7: // additive ember core
       coverage = 1.0f - smoothstep(0.72f, 1.0f, length(in.local));
       break;
-    case 8: { // long additive ember tail, transparent at the trailing end
-      float across = 1.0f - smoothstep(0.1f, 1.0f, abs(in.local.y));
-      float along = smoothstep(-1.0f, 0.9f, in.local.x);
-      coverage = across * along;
-    } break;
   }
   float alpha = in.alpha * coverage;
   // Ember glows and cores (kinds 4 and 7) blend additively, matching the
   // canvas `lighter` compositing in the reference implementation. With
   // premultiplied one/one-minus-src-alpha blending, writing zero alpha
   // leaves the destination intact so the color is purely added.
-  float dst_alpha = (in.kind == 4 || in.kind == 7 || in.kind == 8) ? 0.0f : alpha;
+  float dst_alpha = (in.kind == 4 || in.kind == 7) ? 0.0f : alpha;
   return float4(in.color.rgb * alpha, dst_alpha);
 }
 

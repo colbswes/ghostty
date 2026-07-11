@@ -225,6 +225,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// explicit cell backgrounds and terminal text.
         background_effect_state: ?*background_effect.State = null,
 
+        /// Ping-pong GPU canvas used by the Odysseus effects whose appearance
+        /// depends on painting onto the previous frame.
+        background_effect_canvas: BackgroundEffectCanvasState,
+
         /// Our shader pipelines.
         shaders: Shaders,
 
@@ -548,6 +552,91 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
         };
 
+        /// A persistent transparent surface for native effects that use canvas
+        /// accumulation. The previous frame is sampled into the next texture
+        /// with the effect's decay, then only the current particle stamps are
+        /// added. This mirrors the source canvas implementation without keeping
+        /// or uploading thousands of historical CPU primitives.
+        const BackgroundEffectCanvasState = struct {
+            front_texture: Texture,
+            back_texture: Texture,
+            sampler: Sampler,
+            width: usize = 1,
+            height: usize = 1,
+            initialized: bool = false,
+
+            pub fn init(api: GraphicsAPI) !BackgroundEffectCanvasState {
+                const front_texture = try Texture.init(
+                    api.textureOptions(),
+                    1,
+                    1,
+                    null,
+                );
+                errdefer front_texture.deinit();
+                const back_texture = try Texture.init(
+                    api.textureOptions(),
+                    1,
+                    1,
+                    null,
+                );
+                errdefer back_texture.deinit();
+                const sampler = try Sampler.init(api.samplerOptions());
+                errdefer sampler.deinit();
+
+                return .{
+                    .front_texture = front_texture,
+                    .back_texture = back_texture,
+                    .sampler = sampler,
+                };
+            }
+
+            pub fn deinit(self: *BackgroundEffectCanvasState) void {
+                self.front_texture.deinit();
+                self.back_texture.deinit();
+                self.sampler.deinit();
+            }
+
+            pub fn ensureSize(
+                self: *BackgroundEffectCanvasState,
+                api: GraphicsAPI,
+                width: usize,
+                height: usize,
+            ) !void {
+                if (self.width == width and self.height == height) return;
+
+                const front_texture = try Texture.init(
+                    api.textureOptions(),
+                    @intCast(width),
+                    @intCast(height),
+                    null,
+                );
+                errdefer front_texture.deinit();
+                const back_texture = try Texture.init(
+                    api.textureOptions(),
+                    @intCast(width),
+                    @intCast(height),
+                    null,
+                );
+                errdefer back_texture.deinit();
+
+                self.front_texture.deinit();
+                self.back_texture.deinit();
+                self.front_texture = front_texture;
+                self.back_texture = back_texture;
+                self.width = width;
+                self.height = height;
+                self.initialized = false;
+            }
+
+            pub fn swap(self: *BackgroundEffectCanvasState) void {
+                std.mem.swap(Texture, &self.front_texture, &self.back_texture);
+            }
+
+            pub fn clear(self: *BackgroundEffectCanvasState) void {
+                self.initialized = false;
+            }
+        };
+
         /// The configuration for this renderer that is derived from the main
         /// configuration. This must be exported so that we don't need to
         /// pass around Config pointers which makes memory management a pain.
@@ -735,6 +824,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             );
             errdefer if (background_effect_state) |state| state.destroy(alloc);
 
+            var background_effect_canvas = try BackgroundEffectCanvasState.init(api);
+            errdefer background_effect_canvas.deinit();
+
             const content_scale: f32 = scale: {
                 const value = options.rt_surface.getContentScale() catch break :scale 1;
                 break :scale @floatCast(value.x);
@@ -828,6 +920,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .swap_chain = swap_chain,
                 .display_link = display_link,
                 .background_effect_state = background_effect_state,
+                .background_effect_canvas = background_effect_canvas,
             };
 
             try result.initShaders();
@@ -843,6 +936,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         pub fn deinit(self: *Self) void {
             if (self.background_effect_state) |state| state.destroy(self.alloc);
+            self.background_effect_canvas.deinit();
             if (self.overlay) |*overlay| overlay.deinit(self.alloc);
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
@@ -1665,8 +1759,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         effect.current()
                 else
                     &.{};
+            const background_effect_is_persistent = if (self.background_effect_state) |effect|
+                effect.persistent()
+            else
+                false;
             if (background_effect_points.len > 0) {
                 try frame.background_effect_points.sync(background_effect_points);
+            }
+            if (background_effect_is_persistent) {
+                try self.background_effect_canvas.ensureSize(
+                    self.api,
+                    surface_size.width,
+                    surface_size.height,
+                );
             }
 
             // If our background image buffer has changed, sync it.
@@ -1697,6 +1802,54 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // Get a frame context from the graphics API.
             var frame_ctx = try self.api.beginFrame(self, &frame.target);
             defer frame_ctx.complete(sync);
+
+            // Update the persistent Odysseus canvas only on an effect frame.
+            // Terminal retains 98% of its previous surface; Retrowave retains
+            // 82%. Current particles are then painted into the result, exactly
+            // like the source's stateful browser canvas.
+            if (background_effect_is_persistent and
+                (background_effect_due or size_changed))
+            {
+                const canvas = &self.background_effect_canvas;
+                const was_initialized = canvas.initialized;
+                {
+                    var effect_pass = frame_ctx.renderPass(&.{.{
+                        .target = .{ .texture = canvas.front_texture },
+                        .clear_color = if (was_initialized)
+                            null
+                        else
+                            .{ 0.0, 0.0, 0.0, 0.0 },
+                    }});
+                    defer effect_pass.complete();
+
+                    if (was_initialized) {
+                        const persistence = self.background_effect_state.?.persistence();
+                        effect_pass.step(.{
+                            .pipeline = if (persistence >= 0.9)
+                                self.shaders.pipelines.background_effect_decay_flow
+                            else
+                                self.shaders.pipelines.background_effect_decay_embers,
+                            .uniforms = frame.uniforms.buffer,
+                            .textures = &.{canvas.back_texture},
+                            .samplers = &.{canvas.sampler},
+                            .draw = .{ .type = .triangle, .vertex_count = 3 },
+                        });
+                    }
+
+                    effect_pass.step(.{
+                        .pipeline = self.shaders.pipelines.background_effect,
+                        .uniforms = frame.uniforms.buffer,
+                        .buffers = &.{frame.background_effect_points.buffer},
+                        .draw = .{
+                            .type = .triangle_strip,
+                            .vertex_count = 4,
+                            .instance_count = background_effect_points.len,
+                        },
+                    });
+                }
+                canvas.initialized = true;
+                canvas.swap();
+            }
 
             {
                 var pass = frame_ctx.renderPass(&.{.{
@@ -1736,18 +1889,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     });
                 }
 
-                // Stateful native effects sit on the base background but
-                // remain underneath explicit cell backgrounds and text.
-                pass.step(.{
-                    .pipeline = self.shaders.pipelines.background_effect,
-                    .uniforms = frame.uniforms.buffer,
-                    .buffers = &.{frame.background_effect_points.buffer},
-                    .draw = .{
-                        .type = .triangle_strip,
-                        .vertex_count = 4,
-                        .instance_count = background_effect_points.len,
-                    },
-                });
+                // Native effects sit on the base background but remain under
+                // explicit cell backgrounds and text. Stateful effects sample
+                // their accumulated canvas; the others draw analytic geometry
+                // directly in this pass.
+                if (background_effect_is_persistent) {
+                    pass.step(.{
+                        .pipeline = self.shaders.pipelines.background_effect_composite,
+                        .uniforms = frame.uniforms.buffer,
+                        .textures = &.{self.background_effect_canvas.back_texture},
+                        .samplers = &.{self.background_effect_canvas.sampler},
+                        .draw = .{ .type = .triangle, .vertex_count = 3 },
+                    });
+                } else {
+                    pass.step(.{
+                        .pipeline = self.shaders.pipelines.background_effect,
+                        .uniforms = frame.uniforms.buffer,
+                        .buffers = &.{frame.background_effect_points.buffer},
+                        .draw = .{
+                            .type = .triangle_strip,
+                            .vertex_count = 4,
+                            .instance_count = background_effect_points.len,
+                        },
+                    });
+                }
 
                 // Then we draw any kitty images that need
                 // to be behind text AND cell backgrounds.
@@ -2030,6 +2195,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 if (self.background_effect_state) |state| state.destroy(self.alloc);
                 self.background_effect_state = new_background_effect;
                 new_background_effect = null;
+                self.background_effect_canvas.clear();
             }
 
             // If our background image path changed, prepare the new bg image.

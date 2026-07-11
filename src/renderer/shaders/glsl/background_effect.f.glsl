@@ -37,16 +37,12 @@ void main() {
         coverage = 1.0 - smoothstep(0.5, 1.25, min(cell.x, cell.y));
     } else if (in_data.kind == 7u) {
         coverage = 1.0 - smoothstep(0.72, 1.0, length(in_data.local));
-    } else if (in_data.kind == 8u) {
-        float across = 1.0 - smoothstep(0.1, 1.0, abs(in_data.local.y));
-        float along = smoothstep(-1.0, 0.9, in_data.local.x);
-        coverage = across * along;
     }
     float alpha = in_data.alpha * coverage;
     // Ember glows and cores (kinds 4 and 7) blend additively, matching the
     // canvas `lighter` compositing in the reference implementation. With
     // premultiplied one/one-minus-src-alpha blending, writing zero alpha
     // leaves the destination intact so the color is purely added.
-    float dst_alpha = (in_data.kind == 4u || in_data.kind == 7u || in_data.kind == 8u) ? 0.0 : alpha;
+    float dst_alpha = (in_data.kind == 4u || in_data.kind == 7u) ? 0.0 : alpha;
     out_FragColor = vec4(in_data.color.rgb * alpha, dst_alpha);
 }
