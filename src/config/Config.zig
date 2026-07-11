@@ -616,6 +616,30 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// Available since: 1.2.0
 @"background-image": ?Path = null,
 
+/// A native animated effect drawn between the terminal's base background and
+/// its cell backgrounds/text. Unlike `custom-shader`, native background
+/// effects retain a small amount of simulation state and do not run a
+/// full-screen fragment program for every pixel.
+///
+/// Valid values are:
+///
+///  * `none` - Disable native background effects (default).
+///  * `dots`, `synapse`, `rain`, `constellations`, `perlin-flow`, `petals`,
+///    `sparkles`, and `embers` - Native ports of the Odysseus originals.
+///
+/// This is an experimental option in this fork.
+@"background-effect": BackgroundEffect = .none,
+
+/// Optional color for the native background effect. If unset, the current
+/// terminal foreground color is used.
+@"background-effect-color": ?Color = null,
+
+/// Opacity/intensity multiplier for the native background effect, from 0 to 1.
+@"background-effect-intensity": f32 = 1,
+
+/// Size multiplier for native background effect geometry, from 0.2 to 3.
+@"background-effect-size": f32 = 1,
+
 /// Background image opacity.
 ///
 /// This is relative to the value of `background-opacity`.
@@ -5283,6 +5307,19 @@ pub const CustomShaderAnimation = enum(c_int) {
     false,
     true,
     always,
+};
+
+/// Valid values for background-effect.
+pub const BackgroundEffect = enum {
+    none,
+    dots,
+    synapse,
+    rain,
+    constellations,
+    @"perlin-flow",
+    petals,
+    sparkles,
+    embers,
 };
 
 /// Valid values for macos-non-native-fullscreen

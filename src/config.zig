@@ -45,6 +45,7 @@ pub const WindowDecoration = Config.WindowDecoration;
 pub const WindowPaddingColor = Config.WindowPaddingColor;
 pub const BackgroundImagePosition = Config.BackgroundImagePosition;
 pub const BackgroundImageFit = Config.BackgroundImageFit;
+pub const BackgroundEffect = Config.BackgroundEffect;
 pub const LinkPreviews = Config.LinkPreviews;
 pub const WorkingDirectory = Config.WorkingDirectory;
 

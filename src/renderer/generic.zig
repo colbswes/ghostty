@@ -20,6 +20,7 @@ const rowNeverExtendBg = @import("row.zig").neverExtendBg;
 const Overlay = @import("Overlay.zig");
 const imagepkg = @import("image.zig");
 const ImageState = imagepkg.State;
+const background_effect = @import("background_effect.zig");
 const shadertoy = @import("shadertoy.zig");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
@@ -111,6 +112,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         /// The size of everything.
         size: renderer.Size,
+
+        /// Native pixels per logical point, used to preserve the dimensions
+        /// of the original Odysseus canvas effects on Retina displays.
+        content_scale: f32,
 
         /// True if the window is focused
         focused: bool,
@@ -216,6 +221,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// Whether or not we have custom shaders.
         has_custom_shaders: bool = false,
 
+        /// Optional stateful native background effect. This is rendered below
+        /// explicit cell backgrounds and terminal text.
+        background_effect_state: ?*background_effect.State = null,
+
         /// Our shader pipelines.
         shaders: Shaders,
 
@@ -314,6 +323,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             uniforms: UniformBuffer,
             cells: CellTextBuffer,
             cells_bg: CellBgBuffer,
+            background_effect_points: BackgroundEffectPointBuffer,
 
             grayscale: Texture,
             grayscale_modified: usize = 0,
@@ -339,6 +349,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             const CellBgBuffer = Buffer(shaderpkg.CellBg);
             const CellTextBuffer = Buffer(shaderpkg.CellText);
             const BgImageBuffer = Buffer(shaderpkg.BgImage);
+            const BackgroundEffectPointBuffer = Buffer(background_effect.Primitive);
 
             pub fn init(api: GraphicsAPI, custom_shaders: bool) !FrameState {
                 // Uniform buffer contains exactly 1 uniform struct. The
@@ -357,6 +368,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 errdefer cells.deinit();
                 var cells_bg = try CellBgBuffer.init(api.bgBufferOptions(), 1);
                 errdefer cells_bg.deinit();
+                var background_effect_points = try BackgroundEffectPointBuffer.init(
+                    api.instanceBufferOptions(),
+                    1,
+                );
+                errdefer background_effect_points.deinit();
 
                 // Create a GPU buffer for our background image info.
                 var bg_image_buffer = try BgImageBuffer.init(
@@ -397,6 +413,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .uniforms = uniforms,
                     .cells = cells,
                     .cells_bg = cells_bg,
+                    .background_effect_points = background_effect_points,
                     .bg_image_buffer = bg_image_buffer,
                     .grayscale = grayscale,
                     .color = color,
@@ -410,6 +427,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.uniforms.deinit();
                 self.cells.deinit();
                 self.cells_bg.deinit();
+                self.background_effect_points.deinit();
                 self.grayscale.deinit();
                 self.color.deinit();
                 self.bg_image_buffer.deinit();
@@ -545,6 +563,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             cursor_opacity: f64,
             cursor_text: ?configpkg.Config.TerminalColor,
             background: terminal.color.RGB,
+            background_effect: configpkg.BackgroundEffect,
+            background_effect_color: ?terminal.color.RGB,
+            background_effect_intensity: f32,
+            background_effect_size: f32,
             background_opacity: f64,
             background_opacity_cells: bool,
             foreground: terminal.color.RGB,
@@ -618,6 +640,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .cursor_opacity = @max(0, @min(1, config.@"cursor-opacity")),
 
                     .background = config.background.toTerminalRGB(),
+                    .background_effect = config.@"background-effect",
+                    .background_effect_color = if (config.@"background-effect-color") |color|
+                        color.toTerminalRGB()
+                    else
+                        null,
+                    .background_effect_intensity = std.math.clamp(config.@"background-effect-intensity", 0, 1),
+                    .background_effect_size = std.math.clamp(config.@"background-effect-size", 0.2, 3),
                     .foreground = config.foreground.toTerminalRGB(),
                     .bold_color = if (config.@"bold-color") |b| b.toTerminal() else null,
                     .faint_opacity = @intFromFloat(@ceil(config.@"faint-opacity" * 255)),
@@ -698,12 +727,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             };
             errdefer if (display_link) |v| v.release();
 
+            const background_effect_state = try initBackgroundEffect(
+                alloc,
+                options.config.background_effect,
+            );
+            errdefer if (background_effect_state) |state| state.destroy(alloc);
+
+            const content_scale: f32 = scale: {
+                const value = options.rt_surface.getContentScale() catch break :scale 1;
+                break :scale @floatCast(value.x);
+            };
+
             var result: Self = .{
                 .alloc = alloc,
                 .config = options.config,
                 .surface_mailbox = options.surface_mailbox,
                 .grid_metrics = font_critical.metrics,
                 .size = options.size,
+                .content_scale = content_scale,
                 .focused = true,
                 .scrollbar = .zero,
                 .scrollbar_dirty = false,
@@ -784,6 +825,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 .api = api,
                 .swap_chain = swap_chain,
                 .display_link = display_link,
+                .background_effect_state = background_effect_state,
             };
 
             try result.initShaders();
@@ -798,6 +840,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            if (self.background_effect_state) |state| state.destroy(self.alloc);
             if (self.overlay) |*overlay| overlay.deinit(self.alloc);
             self.terminal_state.deinit(self.alloc);
             if (self.search_selected_match) |*m| m.arena.deinit();
@@ -831,6 +874,24 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
         fn deinitShaders(self: *Self) void {
             self.shaders.deinit(self.alloc);
+        }
+
+        fn initBackgroundEffect(
+            alloc: Allocator,
+            effect: configpkg.BackgroundEffect,
+        ) !?*background_effect.State {
+            const native: background_effect.Effect = switch (effect) {
+                .none => return null,
+                .dots => .dots,
+                .synapse => .synapse,
+                .rain => .rain,
+                .constellations => .constellations,
+                .@"perlin-flow" => .@"perlin-flow",
+                .petals => .petals,
+                .sparkles => .sparkles,
+                .embers => .embers,
+            };
+            return try background_effect.State.create(alloc, native);
         }
 
         fn initShaders(self: *Self) !void {
@@ -1011,7 +1072,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// True if our renderer has animations so that a higher frequency
         /// timer is used.
         pub fn hasAnimations(self: *const Self) bool {
-            return self.has_custom_shaders;
+            return self.has_custom_shaders or
+                (if (self.background_effect_state) |effect| effect.animated() else false);
         }
 
         /// True if our renderer is using vsync. If true, the renderer or apprt
@@ -1486,12 +1548,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.size.screen.width != surface_size.width or
                 self.size.screen.height != surface_size.height;
 
+            const animation_now = try std.time.Instant.now();
+            const background_effect_due = if (self.background_effect_state) |effect|
+                effect.frameDue(animation_now)
+            else
+                false;
+
             // Conditions under which we need to draw the frame, otherwise we
             // don't need to since the previous frame should be identical.
             const needs_redraw =
                 size_changed or
                 self.cells_rebuilt or
-                self.hasAnimations() or
+                self.has_custom_shaders or
+                background_effect_due or
                 sync;
 
             if (!needs_redraw) {
@@ -1574,6 +1643,30 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try frame.cells_bg.sync(self.cells.bg_cells);
             const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows.lists);
 
+            const background_effect_points: []const background_effect.Primitive =
+                if (self.background_effect_state) |effect|
+                    if (background_effect_due or size_changed)
+                        effect.update(
+                            animation_now,
+                            surface_size.width,
+                            surface_size.height,
+                            self.content_scale,
+                            .{
+                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).r,
+                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).g,
+                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).b,
+                            },
+                            self.config.background_effect_intensity,
+                            self.config.background_effect_size,
+                        )
+                    else
+                        effect.current()
+                else
+                    &.{};
+            if (background_effect_points.len > 0) {
+                try frame.background_effect_points.sync(background_effect_points);
+            }
+
             // If our background image buffer has changed, sync it.
             if (frame.bg_image_buffer_modified != self.bg_image_buffer_modified) {
                 try frame.bg_image_buffer.sync(&.{self.bg_image_buffer});
@@ -1640,6 +1733,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .draw = .{ .type = .triangle, .vertex_count = 3 },
                     });
                 }
+
+                // Stateful native effects sit on the base background but
+                // remain underneath explicit cell backgrounds and text.
+                pass.step(.{
+                    .pipeline = self.shaders.pipelines.background_effect,
+                    .uniforms = frame.uniforms.buffer,
+                    .buffers = &.{frame.background_effect_points.buffer},
+                    .draw = .{
+                        .type = .triangle_strip,
+                        .vertex_count = 4,
+                        .instance_count = background_effect_points.len,
+                    },
+                });
 
                 // Then we draw any kitty images that need
                 // to be behind text AND cell backgrounds.
@@ -1899,9 +2005,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const old_blending = self.config.blending;
             const custom_shaders_changed = !self.config.custom_shaders.equal(config.custom_shaders);
+            const background_effect_changed =
+                self.config.background_effect != config.background_effect or
+                !std.meta.eql(self.config.background_effect_color, config.background_effect_color) or
+                self.config.background_effect_intensity != config.background_effect_intensity or
+                self.config.background_effect_size != config.background_effect_size;
+
+            var new_background_effect: ?*background_effect.State = null;
+            if (background_effect_changed) {
+                new_background_effect = try initBackgroundEffect(
+                    self.alloc,
+                    config.background_effect,
+                );
+            }
+            errdefer if (new_background_effect) |state| state.destroy(self.alloc);
 
             self.config.deinit();
             self.config = config.*;
+
+            if (background_effect_changed) {
+                if (self.background_effect_state) |state| state.destroy(self.alloc);
+                self.background_effect_state = new_background_effect;
+                new_background_effect = null;
+            }
 
             // If our background image path changed, prepare the new bg image.
             if (bg_image_changed) try self.prepBackgroundImage();

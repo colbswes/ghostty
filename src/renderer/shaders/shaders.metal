@@ -233,6 +233,106 @@ fragment float4 bg_color_fragment(
 }
 
 //-------------------------------------------------------------------
+// Native Background Effect Shader
+//-------------------------------------------------------------------
+#pragma mark - Native Background Effect Shader
+
+struct BackgroundEffectVertexIn {
+  float2 center [[attribute(0)]];
+  float2 size [[attribute(1)]];
+  float rotation [[attribute(2)]];
+  float alpha [[attribute(3)]];
+  uchar4 color [[attribute(4)]];
+  uint8_t kind [[attribute(5)]];
+  float parameter [[attribute(6)]];
+};
+
+struct BackgroundEffectVertexOut {
+  float4 position [[position]];
+  float2 local;
+  float4 color [[flat]];
+  float alpha [[flat]];
+  uint8_t kind [[flat]];
+  float parameter [[flat]];
+};
+
+vertex BackgroundEffectVertexOut background_effect_vertex(
+  uint vid [[vertex_id]],
+  BackgroundEffectVertexIn in [[stage_in]],
+  constant Uniforms& uniforms [[buffer(1)]]
+) {
+  float2 corner = float2(
+    (vid == 1 || vid == 3) ? 1.0f : -1.0f,
+    (vid == 2 || vid == 3) ? 1.0f : -1.0f
+  );
+  float cs = cos(in.rotation);
+  float sn = sin(in.rotation);
+  float2 local_pos = corner * in.size * 0.5f;
+  float2 pixel_pos = in.center + float2(
+    local_pos.x * cs - local_pos.y * sn,
+    local_pos.x * sn + local_pos.y * cs
+  );
+
+  BackgroundEffectVertexOut out;
+  out.position = float4(
+    pixel_pos.x / uniforms.screen_size.x * 2.0f - 1.0f,
+    1.0f - pixel_pos.y / uniforms.screen_size.y * 2.0f,
+    0.0f,
+    1.0f
+  );
+  out.local = corner;
+  out.color = load_color(
+    in.color,
+    uniforms.use_display_p3,
+    uniforms.use_linear_blending
+  );
+  out.alpha = in.alpha;
+  out.kind = in.kind;
+  out.parameter = in.parameter;
+  return out;
+}
+
+fragment float4 background_effect_fragment(
+  BackgroundEffectVertexOut in [[stage_in]]
+) {
+  float coverage = 0.0f;
+  switch (in.kind) {
+    case 0: // disc
+    case 2: // ellipse
+      coverage = 1.0f - smoothstep(0.72f, 1.0f, length(in.local));
+      break;
+    case 1: // line, with a transparent-to-solid trail
+      coverage = (1.0f - smoothstep(0.55f, 1.0f, abs(in.local.y))) *
+        smoothstep(-1.0f, 1.0f, in.local.x);
+      break;
+    case 3: { // four-point sparkle
+      float shape = sqrt(abs(in.local.x)) + sqrt(abs(in.local.y));
+      coverage = 1.0f - smoothstep(0.92f, 1.05f, shape);
+    } break;
+    case 4: { // ember radial glow
+      float d = length(in.local);
+      coverage = d < 0.4f
+        ? mix(1.0f, 0.3f, d / 0.4f)
+        : 0.3f * (1.0f - smoothstep(0.4f, 1.0f, d));
+    } break;
+    case 5: { // 20 logical-pixel dot grid
+      float spacing = in.parameter;
+      float2 cell = fmod(in.position.xy, spacing);
+      cell = min(cell, spacing - cell);
+      coverage = 1.0f - smoothstep(0.75f, 1.25f, length(cell));
+    } break;
+    case 6: { // 24 logical-pixel synapse grid
+      float spacing = in.parameter;
+      float2 cell = fmod(in.position.xy, spacing);
+      cell = min(cell, spacing - cell);
+      coverage = 1.0f - smoothstep(0.5f, 1.25f, min(cell.x, cell.y));
+    } break;
+  }
+  float alpha = in.alpha * coverage;
+  return float4(in.color.rgb * alpha, alpha);
+}
+
+//-------------------------------------------------------------------
 // Background Image Shader
 //-------------------------------------------------------------------
 #pragma mark - BG Image Shader
@@ -850,4 +950,3 @@ fragment float4 image_fragment(
 
   return rgba;
 }
-

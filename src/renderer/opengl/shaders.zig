@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = @import("../../quirks.zig").inlineAssert;
 const math = @import("../../math.zig");
+const background_effect = @import("../background_effect.zig");
 
 const Pipeline = @import("Pipeline.zig");
 
@@ -17,6 +18,13 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
         .{ "cell_bg", .{
             .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
             .fragment_fn = loadShaderCode("../shaders/glsl/cell_bg.f.glsl"),
+            .blending_enabled = true,
+        } },
+        .{ "background_effect", .{
+            .vertex_attributes = background_effect.Primitive,
+            .vertex_fn = loadShaderCode("../shaders/glsl/background_effect.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect.f.glsl"),
+            .step_fn = .per_instance,
             .blending_enabled = true,
         } },
         .{ "cell_text", .{

@@ -1,0 +1,34 @@
+name: Fork macOS Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build Ghostty core with Metal
+        run: >-
+          nix develop -c zig build
+          -Demit-macos-app=false
+          -Drenderer=metal
+          -Dfont-backend=coretext_freetype
+
+      - name: Build Ghostty.app
+        run: nix develop -c nu macos/build.nu --configuration Debug
+
+      - name: Archive app
+        run: ditto -c -k --sequesterRsrc --keepParent macos/build/Debug/Ghostty.app Ghostty-Odysseus.zip
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ghostty-Odysseus
+          path: Ghostty-Odysseus.zip
+          if-no-files-found: error

@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const macos = @import("macos");
 const objc = @import("objc");
 const math = @import("../../math.zig");
+const background_effect = @import("../background_effect.zig");
 
 const mtl = @import("api.zig");
 const Pipeline = @import("Pipeline.zig");
@@ -19,6 +20,13 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
         .{ "cell_bg", .{
             .vertex_fn = "full_screen_vertex",
             .fragment_fn = "cell_bg_fragment",
+            .blending_enabled = true,
+        } },
+        .{ "background_effect", .{
+            .vertex_attributes = background_effect.Primitive,
+            .vertex_fn = "background_effect_vertex",
+            .fragment_fn = "background_effect_fragment",
+            .step_fn = .per_instance,
             .blending_enabled = true,
         } },
         .{ "cell_text", .{
