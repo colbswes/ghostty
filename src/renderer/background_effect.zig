@@ -43,11 +43,11 @@ pub const State = struct {
     pub const max_primitives = 42_000;
     pub const frame_interval_ns = std.time.ns_per_s / 60;
 
-    /// Trail lengths, in simulation steps. The reference implementation
-    /// draws onto a persistent canvas: embers fade it 18% per frame and
-    /// perlin-flow 2% per frame, so these are sized to where the trails
-    /// drop below one 8-bit alpha step (0.82^24 and 0.98^192 of the
-    /// brightest stamp, respectively).
+    /// Trail lengths, in simulation steps. Embers reconstruct the reference
+    /// canvas's short 18%-per-frame fade. Perlin flow intentionally keeps its
+    /// entire retained window at full strength so Terminal develops the dense,
+    /// persistent green field of the Odysseus presentation instead of looking
+    /// like a handful of short comet tails.
     pub const ember_trail_len = 24;
     pub const flow_trail_len = 192;
 
@@ -70,10 +70,10 @@ pub const State = struct {
     stars: [50]Star = undefined,
     petals: [30]Petal = undefined,
     sparkles: [35]Sparkle = undefined,
-    embers: [100]Ember = undefined,
+    embers: [140]Ember = undefined,
     ember_count: usize = 0,
     ember_alive: usize = 0,
-    ember_history: [100][ember_trail_len]TrailSample = undefined,
+    ember_history: [140][ember_trail_len]TrailSample = undefined,
     ember_history_head: usize = 0,
     flow: [200]FlowParticle = undefined,
     flow_history: [200][flow_trail_len]TrailSample = undefined,
@@ -214,8 +214,11 @@ pub const State = struct {
                 for (&self.sparkles) |*s| s.* = self.makeSparkle(random);
             },
             .embers => {
-                self.ember_count = 60;
-                self.ember_alive = 60;
+                // The browser version fluctuates above its 70-particle floor
+                // as five-particle bursts overlap. Start at that denser visual
+                // steady state so a fresh terminal doesn't look empty.
+                self.ember_count = 90;
+                self.ember_alive = 90;
                 self.ember_history_head = 0;
                 for (&self.ember_history) |*trail| {
                     for (trail) |*sample| sample.step = 0;
@@ -400,14 +403,17 @@ pub const State = struct {
 
     fn buildPerlin(self: *State, color: [4]u8, intensity: f32, size: f32) void {
         for (0..self.flow.len) |particle_i| {
-            var fade: f32 = 1;
             for (0..flow_trail_len) |age| {
                 const sample = self.flow_history[particle_i][(self.flow_history_head + flow_trail_len - age) % flow_trail_len];
                 if (self.sampleValid(sample, age)) {
-                    const alpha = sample.strength * fade * intensity;
-                    if (alpha > 0.0015) self.addDisc(sample.pos, sample.radius * size, alpha, color, .disc);
+                    self.addDisc(
+                        sample.pos,
+                        sample.radius * size,
+                        sample.strength * intensity,
+                        color,
+                        .disc,
+                    );
                 }
-                fade *= 0.98;
             }
         }
     }
@@ -501,7 +507,7 @@ pub const State = struct {
                 // Slots stay put so the dead ember's trail keeps fading
                 // in place. Respawn in the same slot unless we're over
                 // the steady-state population from a recent burst.
-                if (self.ember_alive - 1 < 70) {
+                if (self.ember_alive - 1 < 100) {
                     e.* = self.makeEmber(random);
                 } else {
                     e.alive = false;
@@ -545,8 +551,8 @@ pub const State = struct {
             for (0..ember_trail_len) |age| {
                 const sample = self.ember_history[ember_i][(self.ember_history_head + ember_trail_len - age) % ember_trail_len];
                 if (self.sampleValid(sample, age)) {
-                    self.addDisc(sample.pos, sample.radius * 4 * size, sample.strength * fade * intensity, color, .glow);
-                    self.addDisc(sample.pos, sample.radius * 0.5 * size, sample.strength * 0.6 * fade * intensity, .{ 255, 255, 255, 255 }, .core);
+                    self.addDisc(sample.pos, sample.radius * 4.5 * size, sample.strength * 1.2 * fade * intensity, color, .glow);
+                    self.addDisc(sample.pos, sample.radius * 0.6 * size, sample.strength * 0.8 * fade * intensity, .{ 255, 255, 255, 255 }, .core);
                 }
                 fade *= 0.82;
             }

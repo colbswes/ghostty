@@ -36,7 +36,10 @@ Unlike Ghostty custom shaders, the animated effects keep the original small
 particle simulation as CPU state and upload analytic point/line/shape instances
 in one draw call. They do not run an integration loop for every screen pixel.
 Dots is static after its initial frame; the animated effects are independently
-frame-capped even on a 120 Hz display.
+frame-capped even on a 120 Hz display. Terminal's Perlin flow retains 192
+full-strength frames so its paths accumulate into a dense field rather than
+fading into isolated short trails. Retrowave starts at the browser effect's
+denser burst-state ember population with stronger additive glow and cores.
 
 The fork also bundles every theme defined by the original Odysseus theme
 picker. Select one by name in the Ghostty config, for example:
