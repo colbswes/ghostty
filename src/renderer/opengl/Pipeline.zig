@@ -20,6 +20,10 @@ pub const Options = struct {
     /// Whether to enable blending.
     blending_enabled: bool = true,
 
+    /// Use premultiplied additive blending (ONE, ONE) instead of normal
+    /// premultiplied source-over blending.
+    additive_blending: bool = false,
+
     pub const StepFunction = enum {
         constant,
         per_vertex,
@@ -36,6 +40,7 @@ vao: gl.VertexArray,
 stride: usize,
 
 blending_enabled: bool,
+additive_blending: bool,
 
 pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
     // Load and compile our shaders.
@@ -66,6 +71,7 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
         .vao = vao,
         .stride = if (VertexAttributes) |VA| @sizeOf(VA) else 0,
         .blending_enabled = opts.blending_enabled,
+        .additive_blending = opts.additive_blending,
     };
 }
 

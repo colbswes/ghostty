@@ -24,6 +24,7 @@ struct Uniforms {
   bool use_display_p3;
   bool use_linear_blending;
   bool use_linear_correction;
+  float background_effect_intensity;
 };
 
 //-------------------------------------------------------------------
@@ -277,7 +278,7 @@ fragment float4 background_effect_composite_fragment(
 ) {
   return sample_background_effect_canvas(
     in, uniforms, effect_texture, effect_sampler
-  );
+  ) * uniforms.background_effect_intensity;
 }
 
 //-------------------------------------------------------------------
@@ -346,12 +347,21 @@ fragment float4 background_effect_fragment(
   float coverage = 0.0f;
   switch (in.kind) {
     case 0: // disc
-    case 2: // ellipse
-      coverage = 1.0f - smoothstep(0.72f, 1.0f, length(in.local));
+    case 2: { // ellipse
+      float d = length(in.local);
+      coverage = 1.0f - smoothstep(1.0f - fwidth(d), 1.0f, d);
+    }
       break;
     case 1: // line, with a transparent-to-solid trail
-      coverage = (1.0f - smoothstep(0.55f, 1.0f, abs(in.local.y))) *
-        smoothstep(-1.0f, 1.0f, in.local.x);
+      {
+        float edge = abs(in.local.y);
+        float cross_coverage = 1.0f - smoothstep(
+          1.0f - fwidth(edge), 1.0f, edge
+        );
+        coverage = cross_coverage * clamp(
+          (in.local.x + 1.0f) * 0.5f, 0.0f, 1.0f
+        );
+      }
       break;
     case 3: { // four-point sparkle
       float shape = sqrt(abs(in.local.x)) + sqrt(abs(in.local.y));
@@ -361,31 +371,42 @@ fragment float4 background_effect_fragment(
       float d = length(in.local);
       coverage = d < 0.4f
         ? mix(1.0f, 0.3f, d / 0.4f)
-        : 0.3f * (1.0f - smoothstep(0.4f, 1.0f, d));
+        : mix(0.3f, 0.0f, clamp((d - 0.4f) / 0.6f, 0.0f, 1.0f));
     } break;
     case 5: { // 20 logical-pixel dot grid
       float spacing = in.parameter;
       float2 cell = fmod(in.position.xy, spacing);
       cell = min(cell, spacing - cell);
-      coverage = 1.0f - smoothstep(0.75f, 1.25f, length(cell));
+      float d = length(cell);
+      float radius = spacing / 20.0f;
+      coverage = 1.0f - smoothstep(radius - fwidth(d), radius, d);
     } break;
     case 6: { // 24 logical-pixel synapse grid
       float spacing = in.parameter;
       float2 cell = fmod(in.position.xy, spacing);
       cell = min(cell, spacing - cell);
-      coverage = 1.0f - smoothstep(0.5f, 1.25f, min(cell.x, cell.y));
+      float half_width = spacing / 48.0f;
+      float x_coverage = 1.0f - smoothstep(
+        half_width - fwidth(cell.x), half_width, cell.x
+      );
+      float y_coverage = 1.0f - smoothstep(
+        half_width - fwidth(cell.y), half_width, cell.y
+      );
+      coverage = x_coverage + y_coverage -
+        in.alpha * x_coverage * y_coverage;
     } break;
-    case 7: // additive ember core
-      coverage = 1.0f - smoothstep(0.72f, 1.0f, length(in.local));
+    case 7: { // additive ember core
+      float d = length(in.local);
+      coverage = 1.0f - smoothstep(1.0f - fwidth(d), 1.0f, d);
+    } break;
+    case 8: { // uniform-alpha constellation link
+      float edge = abs(in.local.y);
+      coverage = 1.0f - smoothstep(1.0f - fwidth(edge), 1.0f, edge);
+    }
       break;
   }
   float alpha = in.alpha * coverage;
-  // Ember glows and cores (kinds 4 and 7) blend additively, matching the
-  // canvas `lighter` compositing in the reference implementation. With
-  // premultiplied one/one-minus-src-alpha blending, writing zero alpha
-  // leaves the destination intact so the color is purely added.
-  float dst_alpha = (in.kind == 4 || in.kind == 7) ? 0.0f : alpha;
-  return float4(in.color.rgb * alpha, dst_alpha);
+  return float4(in.color.rgb * alpha, alpha);
 }
 
 //-------------------------------------------------------------------

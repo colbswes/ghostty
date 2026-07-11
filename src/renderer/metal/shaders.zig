@@ -29,6 +29,14 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
+        .{ "background_effect_additive", .{
+            .vertex_attributes = background_effect.Primitive,
+            .vertex_fn = "background_effect_vertex",
+            .fragment_fn = "background_effect_fragment",
+            .step_fn = .per_instance,
+            .blending_enabled = true,
+            .additive_blending = true,
+        } },
         .{ "background_effect_decay_flow", .{
             .vertex_fn = "full_screen_vertex",
             .fragment_fn = "background_effect_decay_flow_fragment",
@@ -75,6 +83,7 @@ const PipelineDescription = struct {
     fragment_fn: []const u8,
     step_fn: mtl.MTLVertexStepFunction = .per_vertex,
     blending_enabled: bool,
+    additive_blending: bool = false,
 
     fn initPipeline(
         self: PipelineDescription,
@@ -92,6 +101,7 @@ const PipelineDescription = struct {
             .attachments = &.{.{
                 .pixel_format = pixel_format,
                 .blending_enabled = self.blending_enabled,
+                .additive_blending = self.additive_blending,
             }},
         });
     }
@@ -274,6 +284,9 @@ pub const Uniforms = extern struct {
         /// (thickness) to gamma-incorrect blending.
         use_linear_correction: bool align(1) = false,
     },
+
+    /// Opacity applied once to a completed persistent background canvas.
+    background_effect_intensity: f32 align(4),
 
     const PaddingExtend = packed struct(u8) {
         left: bool = false,

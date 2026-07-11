@@ -23,10 +23,14 @@ pub const PrimitiveKind = enum(u8) {
     /// reference implementation draws embers with canvas `lighter`
     /// compositing; `glow` and `core` reproduce that in the shader.
     core,
+    /// Uniform-alpha line used by constellation links. Other line effects use
+    /// a transparent-to-solid longitudinal gradient.
+    solid_line,
 };
 
 /// One instanced quad. The fragment shader turns the quad into the requested
-/// analytic shape, so none of these effects require a full-screen shader pass.
+/// analytic shape. Persistent effects add a separate full-screen decay and
+/// composite pass around these particle stamps.
 pub const Primitive = extern struct {
     center: [2]f32 align(8),
     size: [2]f32 align(8),
@@ -41,8 +45,6 @@ pub const Primitive = extern struct {
 /// Simulation values below intentionally mirror the original JS constants.
 pub const State = struct {
     pub const max_primitives = 20_000;
-    pub const frame_interval_ns = std.time.ns_per_s / 60;
-
     effect: Effect,
     primitives: [max_primitives]Primitive = undefined,
     primitive_count: usize = 0,
@@ -50,7 +52,6 @@ pub const State = struct {
     height: f32 = 0,
     pixel_scale: f32 = 1,
     tick: f32 = 0,
-    last_step: ?std.time.Instant = null,
     last_draw: ?std.time.Instant = null,
     prng: std.Random.DefaultPrng,
 
@@ -63,7 +64,6 @@ pub const State = struct {
     sparkles: [35]Sparkle = undefined,
     embers: [140]Ember = undefined,
     ember_count: usize = 0,
-    ember_alive: usize = 0,
     flow: [200]FlowParticle = undefined,
 
     const Pulse = struct { pos: [2]f32, velocity: [2]f32 };
@@ -88,10 +88,9 @@ pub const State = struct {
         max_life: f32,
         wobble: f32,
         spark: bool,
-        /// Dead embers stop moving and recording, but their trail keeps
-        /// rendering until it fades out, like the persistent canvas in
-        /// the reference implementation.
-        alive: bool,
+        /// Replacement and burst embers are appended after the source draw
+        /// loop, so they do not appear until the following frame.
+        fresh: bool,
     };
     const FlowParticle = struct { pos: [2]f32, life: f32 };
 
@@ -156,17 +155,13 @@ pub const State = struct {
         }
         self.last_draw = now;
 
-        const elapsed_ns = if (self.last_step) |last|
-            @min(now.since(last), 4 * frame_interval_ns)
-        else
-            frame_interval_ns;
-        self.last_step = now;
-        const frame_scale = @as(f32, @floatFromInt(elapsed_ns)) /
-            @as(f32, @floatFromInt(frame_interval_ns));
-        self.tick += frame_scale;
-
-        if (self.animated()) self.step(@max(frame_scale, 0.01), intensity);
-        self.rebuild(.{ rgb[0], rgb[1], rgb[2], 255 }, intensity, size);
+        // Odysseus advances every simulation by one fixed step per animation
+        // callback. The configured FPS controls callback frequency directly;
+        // it does not partially catch up motion while applying only one decay.
+        if (self.animated()) self.step(1, intensity, size);
+        const paint_intensity: f32 = if (self.persistent()) 1 else intensity;
+        self.rebuild(.{ rgb[0], rgb[1], rgb[2], 255 }, paint_intensity, size);
+        self.tick += 1;
         return self.current();
     }
 
@@ -175,7 +170,6 @@ pub const State = struct {
         self.height = height;
         self.pixel_scale = pixel_scale;
         self.primitive_count = 0;
-        self.last_step = null;
         self.tick = 0;
         const random = self.prng.random();
 
@@ -207,25 +201,22 @@ pub const State = struct {
                 for (&self.sparkles) |*s| s.* = self.makeSparkle(random);
             },
             .embers => {
-                // The browser version fluctuates above its 70-particle floor
-                // as five-particle bursts overlap. Start at that denser visual
-                // steady state so a fresh terminal doesn't look empty.
-                self.ember_count = 90;
-                self.ember_alive = 90;
+                self.ember_count = 60;
                 for (self.embers[0..self.ember_count]) |*e| {
                     e.* = self.makeEmber(random);
                     e.pos[1] = random.float(f32) * height;
                     e.life = random.float(f32) * e.max_life;
+                    e.fresh = false;
                 }
             },
         }
     }
 
-    fn step(self: *State, dt: f32, intensity: f32) void {
+    fn step(self: *State, dt: f32, intensity: f32, size: f32) void {
         switch (self.effect) {
             .dots => {},
             .synapse => self.stepSynapse(dt),
-            .rain => self.stepRain(dt, intensity),
+            .rain => self.stepRain(dt, intensity, size),
             .constellations => self.stepConstellations(dt),
             .@"perlin-flow" => self.stepPerlin(dt),
             .petals => self.stepPetals(dt),
@@ -311,9 +302,9 @@ pub const State = struct {
         }
     }
 
-    fn stepRain(self: *State, dt: f32, intensity: f32) void {
+    fn stepRain(self: *State, dt: f32, intensity: f32, size: f32) void {
         const random = self.prng.random();
-        const max_drops: usize = @intFromFloat(@floor(@as(f32, 130) * std.math.clamp(intensity, 0, 1)));
+        const max_drops: usize = @intFromFloat(@ceil(@as(f32, 130) * std.math.clamp(intensity, 0, 1)));
         if (self.drop_count < max_drops and random.float(f32) < 0.6 * intensity * dt) {
             const len = (20 + random.float(f32) * 40) * self.pixel_scale;
             self.drops[self.drop_count] = .{
@@ -329,7 +320,7 @@ pub const State = struct {
         var i: usize = 0;
         while (i < self.drop_count) {
             self.drops[i].y += self.drops[i].speed * speed_mult * dt;
-            if (self.drops[i].y > self.height + self.drops[i].len) {
+            if (self.drops[i].y > self.height + self.drops[i].len * size) {
                 self.drop_count -= 1;
                 self.drops[i] = self.drops[self.drop_count];
             } else i += 1;
@@ -360,10 +351,11 @@ pub const State = struct {
             const dx = a.pos[0] - b.pos[0];
             const dy = a.pos[1] - b.pos[1];
             const dist = @sqrt(dx * dx + dy * dy);
-            if (dist < connect_dist) self.addLine(a.pos, b.pos, 0.5 * self.pixel_scale, (1 - dist / connect_dist) * 0.15 * intensity, color);
+            if (dist < connect_dist) self.addSolidLine(a.pos, b.pos, 0.5 * self.pixel_scale, (1 - dist / connect_dist) * 0.15 * intensity, color);
         };
         for (self.stars) |s| {
-            const twinkle = 0.5 + 0.5 * @sin(self.tick * 0.02 + s.phase);
+            // The source increments its constellation clock before drawing.
+            const twinkle = 0.5 + 0.5 * @sin((self.tick + 1) * 0.02 + s.phase);
             self.addDisc(s.pos, s.radius * size, (0.15 + twinkle * 0.25) * intensity, color, .disc);
         }
     }
@@ -469,27 +461,26 @@ pub const State = struct {
             .max_life = 220 + random.float(f32) * 220,
             .wobble = random.float(f32) * std.math.pi * 2,
             .spark = false,
-            .alive = true,
+            .fresh = true,
         };
     }
 
     fn stepEmbers(self: *State, dt: f32) void {
         const random = self.prng.random();
-        for (self.embers[0..self.ember_count]) |*e| {
-            if (!e.alive) continue;
+        var i = self.ember_count;
+        while (i > 0) {
+            i -= 1;
+            const e = &self.embers[i];
             e.wobble += 0.03 * dt;
             e.pos[0] += (e.velocity[0] + @sin(e.wobble) * 0.5 * self.pixel_scale) * dt;
             e.pos[1] += e.velocity[1] * dt;
             e.life += dt;
             if (e.life > e.max_life or e.pos[1] < -20 * self.pixel_scale) {
-                // Slots stay put so the dead ember's trail keeps fading
-                // in place. Respawn in the same slot unless we're over
-                // the steady-state population from a recent burst.
-                if (self.ember_alive - 1 < 100) {
-                    e.* = self.makeEmber(random);
-                } else {
-                    e.alive = false;
-                    self.ember_alive -= 1;
+                self.ember_count -= 1;
+                self.embers[i] = self.embers[self.ember_count];
+                if (self.ember_count < 70 and self.ember_count < self.embers.len) {
+                    self.embers[self.ember_count] = self.makeEmber(random);
+                    self.ember_count += 1;
                 }
                 continue;
             }
@@ -497,29 +488,24 @@ pub const State = struct {
         }
         if (random.float(f32) < 0.015 * dt) {
             const bx = random.float(f32) * self.width;
-            var slot: usize = 0;
             for (0..5) |_| {
-                const idx = idx: {
-                    while (slot < self.ember_count) : (slot += 1) {
-                        if (!self.embers[slot].alive) break :idx slot;
-                    }
-                    if (self.ember_count >= self.embers.len) return;
-                    defer self.ember_count += 1;
-                    break :idx self.ember_count;
-                };
+                if (self.ember_count >= self.embers.len) break;
                 var e = self.makeEmber(random);
                 e.pos[0] = bx + (random.float(f32) - 0.5) * 40 * self.pixel_scale;
                 e.pos[1] = self.height - 10 * self.pixel_scale;
                 e.velocity[1] *= 1.5;
-                self.embers[idx] = e;
-                self.ember_alive += 1;
+                self.embers[self.ember_count] = e;
+                self.ember_count += 1;
             }
         }
     }
 
     fn buildEmbers(self: *State, color: [4]u8, intensity: f32, size: f32) void {
         for (self.embers[0..self.ember_count]) |*e| {
-            if (!e.alive) continue;
+            if (e.fresh) {
+                e.fresh = false;
+                continue;
+            }
 
             const ratio = e.life / e.max_life;
             const life_fade = @min(1, @min(ratio * 4, (1 - ratio) * 3));
@@ -558,6 +544,14 @@ pub const State = struct {
     }
 
     fn addLine(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8) void {
+        self.addLineKind(from, to, width, alpha, color, .line);
+    }
+
+    fn addSolidLine(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8) void {
+        self.addLineKind(from, to, width, alpha, color, .solid_line);
+    }
+
+    fn addLineKind(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8, kind: PrimitiveKind) void {
         const dx = to[0] - from[0];
         const dy = to[1] - from[1];
         self.add(.{
@@ -566,7 +560,7 @@ pub const State = struct {
             .rotation = std.math.atan2(dy, dx),
             .alpha = alpha,
             .color = color,
-            .kind = .line,
+            .kind = kind,
         });
     }
 };
@@ -578,8 +572,13 @@ fn rotate(v: [2]f32, angle: f32) [2]f32 {
 }
 
 fn noise2d(x: f32, y: f32) f32 {
-    const n = @sin(x * 12.9898 + y * 78.233) * 43758.5453;
-    return n - @floor(n);
+    // JavaScript performs this sine hash in double precision. Keeping that
+    // precision avoids quantizing the fractional hash into a visibly coarser
+    // flow field before returning to the f32 particle simulation.
+    const xd: f64 = x;
+    const yd: f64 = y;
+    const n = @sin(xd * 12.9898 + yd * 78.233) * 43758.5453;
+    return @floatCast(n - @floor(n));
 }
 
 fn smoothNoise(x: f32, y: f32) f32 {

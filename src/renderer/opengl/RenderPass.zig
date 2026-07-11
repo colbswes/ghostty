@@ -123,7 +123,13 @@ pub fn step(self: *Self, s: Step) void {
 
     if (s.pipeline.blending_enabled) {
         gl.enable(gl.c.GL_BLEND) catch return;
-        gl.blendFunc(gl.c.GL_ONE, gl.c.GL_ONE_MINUS_SRC_ALPHA) catch return;
+        gl.blendFunc(
+            gl.c.GL_ONE,
+            if (s.pipeline.additive_blending)
+                gl.c.GL_ONE
+            else
+                gl.c.GL_ONE_MINUS_SRC_ALPHA,
+        ) catch return;
     } else {
         gl.disable(gl.c.GL_BLEND) catch return;
     }

@@ -27,6 +27,14 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
+        .{ "background_effect_additive", .{
+            .vertex_attributes = background_effect.Primitive,
+            .vertex_fn = loadShaderCode("../shaders/glsl/background_effect.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect.f.glsl"),
+            .step_fn = .per_instance,
+            .blending_enabled = true,
+            .additive_blending = true,
+        } },
         .{ "background_effect_decay_flow", .{
             .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
             .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_decay_flow.f.glsl"),
@@ -73,6 +81,7 @@ const PipelineDescription = struct {
     fragment_fn: [:0]const u8,
     step_fn: Pipeline.Options.StepFunction = .per_vertex,
     blending_enabled: bool = true,
+    additive_blending: bool = false,
 
     fn initPipeline(self: PipelineDescription) !Pipeline {
         return try .init(self.vertex_attributes, .{
@@ -80,6 +89,7 @@ const PipelineDescription = struct {
             .fragment_fn = self.fragment_fn,
             .step_fn = self.step_fn,
             .blending_enabled = self.blending_enabled,
+            .additive_blending = self.additive_blending,
         });
     }
 };
@@ -219,6 +229,9 @@ pub const Uniforms = extern struct {
 
     /// Various booleans, in a packed struct for space efficiency.
     bools: Bools align(4),
+
+    /// Opacity applied once to a completed persistent background canvas.
+    background_effect_intensity: f32 align(4),
 
     const Bools = packed struct(u32) {
         /// Whether the cursor is 2 cells wide.

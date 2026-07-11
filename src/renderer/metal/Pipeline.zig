@@ -35,6 +35,7 @@ pub const Options = struct {
     pub const Attachment = struct {
         pixel_format: mtl.MTLPixelFormat,
         blending_enabled: bool = true,
+        additive_blending: bool = false,
     };
 };
 
@@ -129,8 +130,12 @@ pub fn init(comptime VertexAttributes: ?type, opts: Options) !Self {
             attachment.setProperty("alphaBlendOperation", @intFromEnum(mtl.MTLBlendOperation.add));
             attachment.setProperty("sourceRGBBlendFactor", @intFromEnum(mtl.MTLBlendFactor.one));
             attachment.setProperty("sourceAlphaBlendFactor", @intFromEnum(mtl.MTLBlendFactor.one));
-            attachment.setProperty("destinationRGBBlendFactor", @intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha));
-            attachment.setProperty("destinationAlphaBlendFactor", @intFromEnum(mtl.MTLBlendFactor.one_minus_source_alpha));
+            const destination_factor: mtl.MTLBlendFactor = if (at.additive_blending)
+                .one
+            else
+                .one_minus_source_alpha;
+            attachment.setProperty("destinationRGBBlendFactor", @intFromEnum(destination_factor));
+            attachment.setProperty("destinationAlphaBlendFactor", @intFromEnum(destination_factor));
         }
     }
 

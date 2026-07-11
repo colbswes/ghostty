@@ -875,6 +875,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .use_linear_blending = options.config.blending.isLinear(),
                         .use_linear_correction = options.config.blending == .@"linear-corrected",
                     },
+                    .background_effect_intensity = options.config.background_effect_intensity,
                 },
                 .custom_shader_uniforms = .{
                     .resolution = .{ 0, 0, 1 },
@@ -1837,7 +1838,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     }
 
                     effect_pass.step(.{
-                        .pipeline = self.shaders.pipelines.background_effect,
+                        .pipeline = if (self.background_effect_state.?.effect == .embers)
+                            self.shaders.pipelines.background_effect_additive
+                        else
+                            self.shaders.pipelines.background_effect,
                         .uniforms = frame.uniforms.buffer,
                         .buffers = &.{frame.background_effect_points.buffer},
                         .draw = .{
@@ -2154,6 +2158,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             self.uniforms.bools.use_display_p3 = config.colorspace == .@"display-p3";
             self.uniforms.bools.use_linear_blending = config.blending.isLinear();
             self.uniforms.bools.use_linear_correction = config.blending == .@"linear-corrected";
+            self.uniforms.background_effect_intensity = config.background_effect_intensity;
 
             const bg_image_config_changed =
                 self.config.bg_image_fit != config.bg_image_fit or
@@ -2172,12 +2177,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             const old_blending = self.config.blending;
             const custom_shaders_changed = !self.config.custom_shaders.equal(config.custom_shaders);
+            // Odysseus keeps the active simulation and canvas when live color,
+            // intensity, size, or timing controls change. Only switching the
+            // effect itself creates a new simulation and clears its history.
             const background_effect_changed =
-                self.config.background_effect != config.background_effect or
-                !std.meta.eql(self.config.background_effect_color, config.background_effect_color) or
-                self.config.background_effect_intensity != config.background_effect_intensity or
-                self.config.background_effect_size != config.background_effect_size or
-                self.config.background_effect_fps != config.background_effect_fps;
+                self.config.background_effect != config.background_effect;
 
             var new_background_effect: ?*background_effect.State = null;
             if (background_effect_changed) {
