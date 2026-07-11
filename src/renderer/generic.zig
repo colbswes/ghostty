@@ -560,6 +560,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         const BackgroundEffectCanvasState = struct {
             front_texture: Texture,
             back_texture: Texture,
+            /// Previous completed canvas retained just long enough to copy its
+            /// overlapping top-left region into a resized pane.
+            resize_texture: ?Texture = null,
             sampler: Sampler,
             width: usize = 1,
             height: usize = 1,
@@ -593,6 +596,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             pub fn deinit(self: *BackgroundEffectCanvasState) void {
                 self.front_texture.deinit();
                 self.back_texture.deinit();
+                if (self.resize_texture) |texture| texture.deinit();
                 self.sampler.deinit();
             }
 
@@ -619,8 +623,19 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 );
                 errdefer back_texture.deinit();
 
-                self.front_texture.deinit();
-                self.back_texture.deinit();
+                if (self.resize_texture) |texture| {
+                    texture.deinit();
+                    self.resize_texture = null;
+                }
+                if (self.initialized) {
+                    // `back_texture` is always the most recently completed
+                    // canvas after the ping-pong swap.
+                    self.resize_texture = self.back_texture;
+                    self.front_texture.deinit();
+                } else {
+                    self.front_texture.deinit();
+                    self.back_texture.deinit();
+                }
                 self.front_texture = front_texture;
                 self.back_texture = back_texture;
                 self.width = width;
@@ -633,6 +648,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             }
 
             pub fn clear(self: *BackgroundEffectCanvasState) void {
+                if (self.resize_texture) |texture| {
+                    texture.deinit();
+                    self.resize_texture = null;
+                }
                 self.initialized = false;
             }
         };
@@ -1646,8 +1665,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.size.screen.height != surface_size.height;
 
             const animation_now = try std.time.Instant.now();
-            const background_effect_due = if (self.background_effect_state) |effect|
-                effect.frameDue(animation_now, self.config.background_effect_fps)
+            const background_effect_due = if (self.focused)
+                if (self.background_effect_state) |effect|
+                    effect.frameDue(animation_now, self.config.background_effect_fps)
+                else
+                    false
             else
                 false;
 
@@ -1740,19 +1762,29 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             try frame.cells_bg.sync(self.cells.bg_cells);
             const fg_count = try frame.cells.syncFromArrayLists(self.cells.fg_rows.lists);
 
+            const background_effect_rgb: [3]u8 = .{
+                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).r,
+                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).g,
+                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).b,
+            };
             const background_effect_points: []const background_effect.Primitive =
                 if (self.background_effect_state) |effect|
-                    if (background_effect_due or size_changed)
+                    if (background_effect_due)
                         effect.update(
                             animation_now,
                             surface_size.width,
                             surface_size.height,
                             self.content_scale,
-                            .{
-                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).r,
-                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).g,
-                                (self.config.background_effect_color orelse self.terminal_state.colors.foreground).b,
-                            },
+                            background_effect_rgb,
+                            self.config.background_effect_intensity,
+                            self.config.background_effect_size,
+                        )
+                    else if (size_changed)
+                        effect.refresh(
+                            surface_size.width,
+                            surface_size.height,
+                            self.content_scale,
+                            background_effect_rgb,
                             self.config.background_effect_intensity,
                             self.config.background_effect_size,
                         )
@@ -1813,6 +1845,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             {
                 const canvas = &self.background_effect_canvas;
                 const was_initialized = canvas.initialized;
+                const resize_texture = canvas.resize_texture;
                 {
                     var effect_pass = frame_ctx.renderPass(&.{.{
                         .target = .{ .texture = canvas.front_texture },
@@ -1823,7 +1856,15 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     }});
                     defer effect_pass.complete();
 
-                    if (was_initialized) {
+                    if (resize_texture) |texture| {
+                        effect_pass.step(.{
+                            .pipeline = self.shaders.pipelines.background_effect_resize,
+                            .uniforms = frame.uniforms.buffer,
+                            .textures = &.{texture},
+                            .samplers = &.{canvas.sampler},
+                            .draw = .{ .type = .triangle, .vertex_count = 3 },
+                        });
+                    } else if (was_initialized) {
                         const persistence = self.background_effect_state.?.persistence();
                         effect_pass.step(.{
                             .pipeline = if (persistence >= 0.9)
@@ -1837,7 +1878,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         });
                     }
 
-                    effect_pass.step(.{
+                    // A resize-only redraw preserves the copied snapshot
+                    // without advancing or stamping the simulation again.
+                    if (background_effect_due) effect_pass.step(.{
                         .pipeline = if (self.background_effect_state.?.effect == .embers)
                             self.shaders.pipelines.background_effect_additive
                         else
@@ -1853,6 +1896,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
                 canvas.initialized = true;
                 canvas.swap();
+                if (resize_texture) |texture| {
+                    texture.deinit();
+                    canvas.resize_texture = null;
+                }
             }
 
             {

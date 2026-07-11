@@ -150,9 +150,7 @@ pub const State = struct {
     ) []const Primitive {
         const w: f32 = @floatFromInt(width);
         const h: f32 = @floatFromInt(height);
-        if (self.width != w or self.height != h or self.pixel_scale != pixel_scale) {
-            self.reset(w, h, pixel_scale);
-        }
+        self.ensureDimensions(w, h, pixel_scale);
         self.last_draw = now;
 
         // Odysseus advances every simulation by one fixed step per animation
@@ -163,6 +161,79 @@ pub const State = struct {
         self.rebuild(.{ rgb[0], rgb[1], rgb[2], 255 }, paint_intensity, size);
         self.tick += 1;
         return self.current();
+    }
+
+    /// Rebuild geometry for a resized surface without advancing or replacing
+    /// the simulation. This keeps an unfocused split frozen in place.
+    pub fn refresh(
+        self: *State,
+        width: usize,
+        height: usize,
+        pixel_scale: f32,
+        rgb: [3]u8,
+        intensity: f32,
+        size: f32,
+    ) []const Primitive {
+        const w: f32 = @floatFromInt(width);
+        const h: f32 = @floatFromInt(height);
+        self.ensureDimensions(w, h, pixel_scale);
+        const paint_intensity: f32 = if (self.persistent()) 1 else intensity;
+        self.rebuild(.{ rgb[0], rgb[1], rgb[2], 255 }, paint_intensity, size);
+        return self.current();
+    }
+
+    fn ensureDimensions(self: *State, width: f32, height: f32, pixel_scale: f32) void {
+        if (self.width == 0 or self.height == 0) {
+            self.reset(width, height, pixel_scale);
+        } else if (self.width != width or self.height != height or self.pixel_scale != pixel_scale) {
+            self.resize(width, height, pixel_scale);
+        }
+    }
+
+    /// Preserve logical particle positions across a surface resize. When the
+    /// backing scale changes, physical coordinates are rescaled so the effect
+    /// remains fixed in logical pane space.
+    fn resize(self: *State, width: f32, height: f32, pixel_scale: f32) void {
+        const scale = pixel_scale / self.pixel_scale;
+        if (scale != 1) switch (self.effect) {
+            .dots => {},
+            .synapse => for (self.pulses[0..self.pulse_count]) |*p| {
+                scaleVec(&p.pos, scale);
+                scaleVec(&p.velocity, scale);
+            },
+            .rain => for (self.drops[0..self.drop_count]) |*d| {
+                d.x *= scale;
+                d.y *= scale;
+                d.len *= scale;
+                d.speed *= scale;
+            },
+            .constellations => for (&self.stars) |*s| {
+                scaleVec(&s.pos, scale);
+                scaleVec(&s.velocity, scale);
+                s.radius *= scale;
+            },
+            .@"perlin-flow" => for (&self.flow) |*p| scaleVec(&p.pos, scale),
+            .petals => for (&self.petals) |*p| {
+                scaleVec(&p.pos, scale);
+                p.size *= scale;
+                p.velocity_y *= scale;
+                p.wobble *= scale;
+            },
+            .sparkles => for (&self.sparkles) |*s| {
+                scaleVec(&s.pos, scale);
+                s.size *= scale;
+            },
+            .embers => for (self.embers[0..self.ember_count]) |*e| {
+                scaleVec(&e.pos, scale);
+                scaleVec(&e.velocity, scale);
+                e.radius *= scale;
+            },
+        };
+
+        self.width = width;
+        self.height = height;
+        self.pixel_scale = pixel_scale;
+        self.primitive_count = 0;
     }
 
     fn reset(self: *State, width: f32, height: f32, pixel_scale: f32) void {
@@ -569,6 +640,11 @@ fn rotate(v: [2]f32, angle: f32) [2]f32 {
     const c = @cos(angle);
     const s = @sin(angle);
     return .{ v[0] * c - v[1] * s, v[0] * s + v[1] * c };
+}
+
+fn scaleVec(v: *[2]f32, scale: f32) void {
+    v[0] *= scale;
+    v[1] *= scale;
 }
 
 fn noise2d(x: f32, y: f32) f32 {

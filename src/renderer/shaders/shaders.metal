@@ -281,6 +281,24 @@ fragment float4 background_effect_composite_fragment(
   ) * uniforms.background_effect_intensity;
 }
 
+fragment float4 background_effect_resize_fragment(
+  FullScreenVertexOut in [[stage_in]],
+  texture2d<float> effect_texture [[texture(0)]],
+  sampler effect_sampler [[sampler(0)]]
+) {
+  float2 source_size = float2(
+    effect_texture.get_width(), effect_texture.get_height()
+  );
+  // Metal stage coordinates use the same top-left pane origin as the effect
+  // simulation, so an unscaled pixel copy preserves the pane in place.
+  float2 source_pixel = in.position.xy;
+  if (any(source_pixel < float2(0.0f)) ||
+      any(source_pixel >= source_size)) {
+    return float4(0.0f);
+  }
+  return effect_texture.sample(effect_sampler, source_pixel / source_size);
+}
+
 //-------------------------------------------------------------------
 // Native Background Effect Shader
 //-------------------------------------------------------------------
@@ -401,7 +419,10 @@ fragment float4 background_effect_fragment(
     } break;
     case 8: { // uniform-alpha constellation link
       float edge = abs(in.local.y);
-      coverage = 1.0f - smoothstep(1.0f - fwidth(edge), 1.0f, edge);
+      // Preserve full center coverage for the one-physical-pixel Retina line
+      // while retaining Canvas-like half-pixel antialiasing at its edges.
+      float aa = 0.5f * fwidth(edge);
+      coverage = 1.0f - smoothstep(1.0f - aa, 1.0f, edge);
     }
       break;
   }

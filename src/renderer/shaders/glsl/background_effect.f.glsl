@@ -48,7 +48,11 @@ void main() {
         coverage = 1.0 - smoothstep(1.0 - fwidth(d), 1.0, d);
     } else if (in_data.kind == 8u) {
         float edge = abs(in_data.local.y);
-        coverage = 1.0 - smoothstep(1.0 - fwidth(edge), 1.0, edge);
+        // A constellation link is one physical pixel at normal Retina scale.
+        // Half a derivative gives the Canvas-style half-pixel edge ramp while
+        // preserving full coverage at the center of that single-pixel quad.
+        float aa = 0.5 * fwidth(edge);
+        coverage = 1.0 - smoothstep(1.0 - aa, 1.0, edge);
     }
     float alpha = in_data.alpha * coverage;
     out_FragColor = vec4(in_data.color.rgb * alpha, alpha);

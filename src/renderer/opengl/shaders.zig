@@ -50,6 +50,11 @@ const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
             .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_composite.f.glsl"),
             .blending_enabled = true,
         } },
+        .{ "background_effect_resize", .{
+            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode("../shaders/glsl/background_effect_resize.f.glsl"),
+            .blending_enabled = false,
+        } },
         .{ "cell_text", .{
             .vertex_attributes = CellText,
             .vertex_fn = loadShaderCode("../shaders/glsl/cell_text.v.glsl"),
