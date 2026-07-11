@@ -23,6 +23,10 @@ pub const PrimitiveKind = enum(u8) {
     /// reference implementation draws embers with canvas `lighter`
     /// compositing; `glow` and `core` reproduce that in the shader.
     core,
+    /// Long, tapered, additive streak aligned opposite an ember's velocity.
+    /// The retained radial stamps provide haze; this primitive makes the tail
+    /// visibly read as a tail even at the reference's slow particle speeds.
+    ember_trail,
 };
 
 /// One instanced quad. The fragment shader turns the quad into the requested
@@ -546,6 +550,39 @@ pub const State = struct {
     }
 
     fn buildEmbers(self: *State, color: [4]u8, intensity: f32, size: f32) void {
+        // Draw one explicit tapered streak per live ember. Reconstructing only
+        // the browser's fading radial stamps makes slow embers look like dots,
+        // because consecutive stamps overlap almost completely.
+        for (self.embers[0..self.ember_count]) |e| {
+            if (!e.alive) continue;
+
+            const ratio = e.life / e.max_life;
+            const life_fade = @min(1, @min(ratio * 4, (1 - ratio) * 3));
+            if (life_fade <= 0) continue;
+
+            const velocity = [2]f32{
+                e.velocity[0] + @sin(e.wobble) * 0.5 * self.pixel_scale,
+                e.velocity[1],
+            };
+            const speed = @sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
+            if (speed <= 0.001) continue;
+
+            const direction = [2]f32{ velocity[0] / speed, velocity[1] / speed };
+            const tail_length = (42 * self.pixel_scale + speed * 30) * size;
+            const tail = [2]f32{
+                e.pos[0] - direction[0] * tail_length,
+                e.pos[1] - direction[1] * tail_length,
+            };
+            self.addLineKind(
+                tail,
+                e.pos,
+                @max(e.radius * 6 * size, 1.5 * self.pixel_scale),
+                0.7 * life_fade * intensity,
+                color,
+                .ember_trail,
+            );
+        }
+
         for (0..self.ember_count) |ember_i| {
             var fade: f32 = 1;
             for (0..ember_trail_len) |age| {
@@ -587,6 +624,10 @@ pub const State = struct {
     }
 
     fn addLine(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8) void {
+        self.addLineKind(from, to, width, alpha, color, .line);
+    }
+
+    fn addLineKind(self: *State, from: [2]f32, to: [2]f32, width: f32, alpha: f32, color: [4]u8, kind: PrimitiveKind) void {
         const dx = to[0] - from[0];
         const dy = to[1] - from[1];
         self.add(.{
@@ -595,7 +636,7 @@ pub const State = struct {
             .rotation = std.math.atan2(dy, dx),
             .alpha = alpha,
             .color = color,
-            .kind = .line,
+            .kind = kind,
         });
     }
 };

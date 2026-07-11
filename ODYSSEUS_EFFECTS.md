@@ -40,6 +40,8 @@ frame-capped even on a 120 Hz display. Terminal's Perlin flow retains 192
 full-strength frames so its paths accumulate into a dense field rather than
 fading into isolated short trails. Retrowave starts at the browser effect's
 denser burst-state ember population with stronger additive glow and cores.
+Each ember also draws a velocity-aligned tapered additive streak, so its tail
+remains visibly long even at the original effect's slow movement speed.
 
 The fork also bundles every theme defined by the original Odysseus theme
 picker. Select one by name in the Ghostty config, for example:
